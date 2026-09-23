@@ -7,7 +7,7 @@ import stat
 import zipfile
 from pathlib import Path, PurePosixPath
 
-VERSION = "0.1.1-hermes.2"
+VERSION = "0.2.0-dev1"
 ARCHIVE_ROOT = f"orbisprobe-v{VERSION}"
 FIXED_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
 TOP_LEVEL_FILES = {
@@ -19,9 +19,10 @@ TOP_LEVEL_FILES = {
 }
 SOURCE_SUFFIXES = {
     "orbisprobe": {".py"},
-    "tests": {".py"},
+    "tests": {".py", ".json"},
     "examples": {".json"},
     "scripts": {".py"},
+    "docs": {".md"},
 }
 FORBIDDEN_PARTS = {
     ".git",

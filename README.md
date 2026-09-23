@@ -1,4 +1,26 @@
-# OrbisProbe 0.1.1+hermes.2
+# OrbisProbe 0.2.0.dev1 — M1 offline development
+
+> **Development tree:** this is not the frozen stable baseline. Stable remains
+> `OrbisProbe 0.1.1+hermes.2` with SHA-256
+> `701441e07698183f9e7604033ea15f4324599f17dcc5dbed8b271bfa88ad87ef`.
+> v0.2-M1 is offline-only: no PS4 contact, no requests, and no writes.
+
+## v0.2-M1 privilege-surface discovery
+
+M1 adds offline-only scanners and a conservative x86-64 register-lifetime engine. Architecture and
+claim boundaries are documented in [`docs/M1-ARCHITECTURE.md`](docs/M1-ARCHITECTURE.md).
+
+```bash
+orbisprobe privilege-surface svm kernel.bin --base 0xffffffffd9918000
+orbisprobe privilege-surface iommu kernel.bin --base 0xffffffffd9918000
+orbisprobe privilege-surface secure kernel.bin --base 0xffffffffd9918000
+orbisprobe privilege-surface memctl kernel.bin --base 0xffffffffd9918000
+orbisprobe privilege-surface all kernel.bin --base 0xffffffffd9918000 --json
+```
+
+Outputs contain structured surfaces, evidence, confidence, boundary types, ranked candidates,
+research graphs, and open proof chains. Pattern hits remain triage evidence and never become findings
+without a closed source→validation→boundary→consumer→observable chain.
 
 OrbisProbe is an evidence-driven experiment harness for authorized PS4/Orbis security research. It sits between Hermes and offline artifacts or an explicitly supplied target adapter.
 
@@ -17,7 +39,7 @@ No live mutation should be improvised outside a validated, hash-bound OrbisProbe
 
 ## Status and boundaries
 
-- Baseline version: `0.1.1+hermes.2`
+- Development version: `0.2.0.dev1`
 - Python: `>=3.11`
 - Capstone: pinned to `5.0.9`
 - Persistent experiments: always blocked

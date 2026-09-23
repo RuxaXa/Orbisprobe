@@ -1,0 +1,16 @@
+{
+  "fixture_id": "CASE-003-HOST-DESCRIPTOR",
+  "description": "Synthetic instruction fixture derived from confirmed CASE-003 host-side structure; no secure-side behavior is asserted.",
+  "binary_hex": "55 48 89 e5 ba 80 00 00 00 83 f8 07 83 f8 08 83 f8 09 48 8b 46 08 8b 4e 10 83 fa 30 83 f8 54 49 8b 47 28 49 8b 57 30 49 8b 4f 38 e8 00 00 00 00 49 8b 47 28 49 8b 57 30 49 8b 4f 38 e8 00 00 00 00 c3",
+  "descriptor_size": 128,
+  "tag_offset": 0,
+  "address_offset": 8,
+  "op_offset": 16,
+  "tags": [7, 8, 9],
+  "request_size": 48,
+  "response_size": 84,
+  "icc": [141, 18],
+  "expected_classification": "CROSS-PROCESSOR-CANDIDATE",
+  "expected_status": "SUPPORTED",
+  "must_not_claim": "exploit"
+}

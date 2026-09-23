@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.0.dev1 — M1
+
+- Added the common privilege-surface model, evidence statuses, deterministic IDs, and P1–P4 triage.
+- Added an internal research graph with typed nodes, edges, and bounded path queries.
+- Added candidate-localized offline SVM/HV, IOMMU/DMA, SAMU/secure, and memory-controller scanners.
+- Added x86-64 definition/overwrite/call-clobber/consumer lifetime tracing.
+- Added `privilege-surface svm|iommu|secure|memctl|all` with human and JSON output.
+- Added P2-1 `0x631ad0` and CASE-003 regression fixtures.
+- Added malformed, truncated, unsupported-architecture, invalid-address, call-clobber, and false-positive tests.
+- Kept all live access and persistent-state functionality out of M1.
+
 ## 0.1.1+hermes.2
 
 Security-hardening release based on the original OrbisProbe v0.1 source package.

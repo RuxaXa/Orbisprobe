@@ -7,12 +7,14 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
+from .analysis.binary import BinaryImage, UnsupportedArchitecture
 from .analyzers.memop_scan import scan_raw_x86_64
 from .evidence import EvidenceLog
 from .policy import Policy
 from .report import markdown_report
 from .runner import ExitClassification, Runner
 from .schema import Experiment, RiskClass, experiment_sha256
+from .surfaces.privilege import TRACK_ORDER, scan_privilege_surface
 from .targets.command_adapter import CommandAdapter
 from .targets.offline import OfflineTarget
 
@@ -68,6 +70,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     command.add_argument("evidence")
     command.add_argument("--out")
 
+    privilege = sub.add_parser("privilege-surface")
+    privilege_sub = privilege.add_subparsers(dest="surface_mode", required=True)
+    for mode in (*TRACK_ORDER, "all"):
+        command = privilege_sub.add_parser(mode)
+        command.add_argument("binary")
+        command.add_argument("--base", default=0, type=lambda value: int(value, 0))
+        command.add_argument("--architecture", default="x86_64")
+        command.add_argument("--json", action="store_true")
+        command.add_argument("--out")
+
     args = parser.parse_args(argv)
     if args.cmd == "validate":
         exp, error = _load_experiment(args.experiment)
@@ -109,6 +121,28 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 3
         print(json.dumps(result, indent=2))
         return EXIT_BY_CLASSIFICATION[result["exit_classification"]]
+
+    if args.cmd == "privilege-surface":
+        try:
+            image = BinaryImage.open(
+                args.binary,
+                architecture=args.architecture,
+                base=args.base,
+            )
+            result = scan_privilege_surface(args.surface_mode, image)
+            text = (
+                json.dumps(result.to_dict(), indent=2, sort_keys=True)
+                if args.json
+                else result.to_text()
+            )
+            if args.out:
+                Path(args.out).write_text(text + "\n", encoding="utf-8")
+            else:
+                print(text)
+            return 0
+        except (OSError, ValueError, RuntimeError, UnsupportedArchitecture) as exc:
+            print(f"orbisprobe: privilege-surface failed: {exc}", file=sys.stderr)
+            return 1
 
     if args.cmd == "scan-memops":
         try:

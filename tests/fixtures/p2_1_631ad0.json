@@ -1,0 +1,15 @@
+{
+  "fixture_id": "P2-1-0x631ad0",
+  "call_address": 6494928,
+  "operation": "memcpy",
+  "length_values": [168, 168],
+  "index_domain": [0, 1],
+  "destination_slot_size": 192,
+  "destination_slot_count": 2,
+  "length_type_bits": 32,
+  "length_signed": false,
+  "length_mutable": false,
+  "destination_base": "static_table_0x2681b80",
+  "source": "r15_caller_structure",
+  "expected_verdict": "SAFE-INVARIANT"
+}
