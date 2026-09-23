@@ -30,6 +30,7 @@ def test_iommu_requires_multiple_structural_evidence_categories(tmp_path: Path):
     assert {"string_anchor", "research_constant", "descriptor_write"} <= kinds
     assert "hardware consumer not reconstructed" in surface.unknowns
     assert any("mapping validation" in chain for chain in surface.open_chains)
+    assert result.graph.to_dict()["edges"] == []
 
 
 def test_single_dma_string_is_not_promoted_to_surface(tmp_path: Path):
@@ -52,18 +53,14 @@ def test_iommu_decodes_0xa70_as_structure_displacement(tmp_path: Path):
     code = bytes.fromhex("48 8b 87 70 0a 00 00 c3")
     strings = b"gpuvm_map\x00DMAC\x00device table\x00"
     result = scan_iommu(image(tmp_path, "disp.bin", code + strings))
-    anchors = [
-        item
-        for item in result.surfaces[0].evidence
-        if item.kind == "research_constant" and item.raw.get("value") == 0xA70
-    ]
-    assert anchors
-    assert anchors[0].raw["role"] == "STRUCT_FIELD_DISPLACEMENT"
+    assert result.classification == "IOMMU-NONE"
+    assert result.surfaces == []
+    assert any("STRUCT_FIELD_DISPLACEMENT" in message for message in result.diagnostics)
 
 
 def test_iommu_memory_read_is_not_descriptor_write(tmp_path: Path):
     code = bytes.fromhex("b8 70 0a 00 00 f6 47 20 12 c3")
     strings = b"gpuvm_map\x00DMAC\x00device table\x00"
     result = scan_iommu(image(tmp_path, "read-only.bin", code + strings))
-    assert result.surfaces
-    assert not any(item.kind == "descriptor_write" for item in result.surfaces[0].evidence)
+    assert result.classification == "IOMMU-NONE"
+    assert result.surfaces == []

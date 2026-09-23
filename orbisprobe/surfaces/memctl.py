@@ -174,8 +174,10 @@ def scan_memctl(image: BinaryImage) -> TrackScanResult:
     graph.add_node(GraphNode(function_id, NodeType.FUNCTION, {"address": function_address}))
     graph.add_node(GraphNode(object_id, NodeType.OBJECT, {"classification": classification}))
     graph.add_node(GraphNode(endpoint_id, NodeType.HARDWARE_ENDPOINT, {"class": "MEMCTL"}))
-    graph.add_edge(GraphEdge(function_id, object_id, EdgeType.WRITES))
-    graph.add_edge(GraphEdge(object_id, endpoint_id, EdgeType.CONSUMES))
+    if any(item.kind == "config_read" for item in evidence):
+        graph.add_edge(GraphEdge(function_id, object_id, EdgeType.READS))
+    if any(item.kind == "config_write" for item in evidence):
+        graph.add_edge(GraphEdge(function_id, object_id, EdgeType.WRITES))
     return TrackScanResult(
         track="memctl",
         classification=classification,

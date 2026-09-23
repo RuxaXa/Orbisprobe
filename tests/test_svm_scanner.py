@@ -19,6 +19,7 @@ def test_svm_instruction_alone_is_capability_only(tmp_path: Path):
     assert surface.status.value == "SUPPORTED"
     assert "runtime role" in surface.unknowns
     assert any(item.raw.get("mnemonic") == "vmrun" for item in surface.evidence)
+    assert result.graph.to_dict()["edges"] == []
 
 
 def test_svm_init_sequence_is_not_overclaimed_active(tmp_path: Path):
@@ -58,3 +59,17 @@ def test_svm_msr_attribution_stops_on_call_clobber_and_ecx_overwrite(tmp_path: P
         result = scan_svm(image(tmp_path, name, fixture))
         assert result.classification == "SVM-CAPABILITY-ONLY"
         assert not any(item.kind == "svm_msr" for item in result.surfaces[0].evidence)
+
+
+def test_svm_svme_requires_eax_and_local_initialization(tmp_path: Path):
+    wrong_register = "b9 80 00 00 c0 0f 32 81 cb 00 10 00 00 0f 30 0f 01 d8 c3"
+    assert scan_svm(image(tmp_path, "wrong-reg.bin", wrong_register)).classification == "SVM-CAPABILITY-ONLY"
+
+    binary = tmp_path / "far.bin"
+    binary.write_bytes(
+        bytes.fromhex("55 48 89 e5 0f 01 d8 c3")
+        + b"\x90" * 0x500
+        + bytes.fromhex("55 48 89 e5 b9 17 01 01 c0 0f 30 c3")
+    )
+    result = scan_svm(BinaryImage.open(binary, architecture="x86_64", base=0x8000))
+    assert result.classification == "SVM-CAPABILITY-ONLY"

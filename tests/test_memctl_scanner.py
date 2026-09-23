@@ -21,6 +21,9 @@ def test_memctl_detects_pci_config_and_tom_msr_without_claiming_control(tmp_path
     assert {"pci_config_port", "config_read", "config_write", "address_map_msr"} <= kinds
     assert surface.status.value == "UNKNOWN"
     assert "register semantics on target silicon" in surface.unknowns
+    edge_types = {edge["edge_type"] for edge in result.graph.to_dict()["edges"]}
+    assert "consumes" not in edge_types
+    assert edge_types <= {"reads", "writes"}
 
 
 def test_memctl_none_is_clean(tmp_path: Path):

@@ -5,7 +5,7 @@ from typing import Any
 
 from orbisprobe.analysis.binary import BinaryImage
 
-from .graph import EdgeType, GraphEdge, GraphNode, NodeType, ResearchGraph
+from .graph import GraphNode, NodeType, ResearchGraph
 from .model import (
     BoundaryType,
     Confidence,
@@ -61,7 +61,7 @@ def _scan_window(
     descriptor_addresses: list[int],
 ) -> dict[str, Any] | None:
     try:
-        from capstone import CS_OP_MEM
+        from capstone import CS_AC_READ, CS_OP_MEM
     except ImportError as exc:
         raise RuntimeError("secure-surface scanning requires capstone") from exc
 
@@ -69,6 +69,7 @@ def _scan_window(
     address_hits: list[int] = []
     op_hits: list[int] = []
     size_hits: list[tuple[int, int]] = []
+    memory_accesses: dict[tuple[str, int], list[int]] = defaultdict(list)
     memory_reads: dict[tuple[str, int], list[int]] = defaultdict(list)
     call_addresses: list[int] = []
     for instruction in image.disassemble(start=start, end=end):
@@ -76,6 +77,8 @@ def _scan_window(
             continue
         mnemonic = instruction.mnemonic.lower()
         if mnemonic.startswith("ret"):
+            break
+        if mnemonic == "jmp":
             break
         immediates = _immediates(instruction)
         if mnemonic == "cmp":
@@ -95,22 +98,24 @@ def _scan_window(
                 address_hits.append(instruction.address)
             if displacement == 0x10:
                 op_hits.append(instruction.address)
-            memory_reads[(base, displacement)].append(instruction.address)
+            memory_accesses[(base, displacement)].append(instruction.address)
+            if operand.access & CS_AC_READ:
+                memory_reads[(base, displacement)].append(instruction.address)
 
     field_bases = {
         base
-        for base, _displacement in memory_reads
-        if base and (base, 8) in memory_reads and (base, 0x10) in memory_reads
+        for base, _displacement in memory_accesses
+        if base and (base, 8) in memory_accesses and (base, 0x10) in memory_accesses
     }
     address_hits = [
         address
         for base in field_bases
-        for address in memory_reads[(base, 8)]
+        for address in memory_accesses[(base, 8)]
     ]
     op_hits = [
         address
         for base in field_bases
-        for address in memory_reads[(base, 0x10)]
+        for address in memory_accesses[(base, 0x10)]
     ]
     fingerprint = (
         bool(descriptor_addresses)
@@ -288,8 +293,6 @@ def scan_secure(image: BinaryImage) -> TrackScanResult:
         graph.add_node(GraphNode(function_id, NodeType.FUNCTION, {"address": start}))
         graph.add_node(GraphNode(descriptor_id, NodeType.DESCRIPTOR, {"address_offset": 8, "op_offset": 16}))
         graph.add_node(GraphNode(endpoint_id, NodeType.HARDWARE_ENDPOINT, {"class": "SAMU/SBL"}))
-        graph.add_edge(GraphEdge(function_id, descriptor_id, EdgeType.WRITES))
-        graph.add_edge(GraphEdge(descriptor_id, endpoint_id, EdgeType.SUBMITS))
 
     if not surfaces:
         diagnostics = []

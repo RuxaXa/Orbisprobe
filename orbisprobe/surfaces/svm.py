@@ -3,7 +3,7 @@ from __future__ import annotations
 from orbisprobe.analysis.binary import BinaryImage
 from orbisprobe.analysis.dataflow import normalize_register
 
-from .graph import EdgeType, GraphEdge, GraphNode, NodeType, ResearchGraph
+from .graph import GraphNode, NodeType, ResearchGraph
 from .model import (
     BoundaryType,
     Confidence,
@@ -39,8 +39,7 @@ def scan_svm(image: BinaryImage) -> TrackScanResult:
     seen: set[tuple[str, int, str]] = set()
     svm_instruction_addresses: list[int] = []
     msr_names: set[str] = set()
-    efer_svme_sequence = False
-    hsave_write = False
+    initialization_addresses: list[int] = []
     for expected_mnemonic, opcode in SVM_OPCODES.items():
         for address in image.find_bytes(opcode, max_hits=4096):
             instruction = image.decode_one(address)
@@ -62,7 +61,7 @@ def scan_svm(image: BinaryImage) -> TrackScanResult:
 
     image_end = image.base + image.size
     try:
-        from capstone import CS_OP_IMM
+        from capstone import CS_OP_IMM, CS_OP_REG
     except ImportError as exc:
         raise RuntimeError("SVM scanning requires capstone") from exc
     for msr, msr_name in SVM_MSRS.items():
@@ -88,9 +87,15 @@ def scan_svm(image: BinaryImage) -> TrackScanResult:
                     ):
                         break
                 if mnemonic not in {"rdmsr", "wrmsr"}:
-                    if mnemonic == "or" and any(
-                        operand.type == CS_OP_IMM and operand.imm == 0x1000
-                        for operand in instruction.operands
+                    if (
+                        mnemonic == "or"
+                        and len(instruction.operands) >= 2
+                        and instruction.operands[0].type == CS_OP_REG
+                        and normalize_register(instruction.reg_name(instruction.operands[0].reg)) == "rax"
+                        and any(
+                            operand.type == CS_OP_IMM and operand.imm == 0x1000
+                            for operand in instruction.operands[1:]
+                        )
                     ):
                         svme_or_positions.append(position)
                     continue
@@ -99,7 +104,7 @@ def scan_svm(image: BinaryImage) -> TrackScanResult:
                 else:
                     wrmsr_positions.append(position)
                     if msr_name == "VM_HSAVE_PA":
-                        hsave_write = True
+                        initialization_addresses.append(instruction.address)
                 msr_names.add(msr_name)
                 key = ("svm_msr", instruction.address, f"{msr_name}:{mnemonic}")
                 if key not in seen:
@@ -118,7 +123,15 @@ def scan_svm(image: BinaryImage) -> TrackScanResult:
                 for bit_set in svme_or_positions
                 for write in wrmsr_positions
             ):
-                efer_svme_sequence = True
+                initialization_addresses.extend(
+                    window[write].address
+                    for write in wrmsr_positions
+                    if any(
+                        read < bit_set < write
+                        for read in rdmsr_positions
+                        for bit_set in svme_or_positions
+                    )
+                )
 
     control_instructions = image.find_mov_immediate(0x1000, max_hits=4096)
     for address in image.find_bytes(bytes.fromhex("0d00100000"), max_hits=4096):
@@ -136,7 +149,12 @@ def scan_svm(image: BinaryImage) -> TrackScanResult:
     if not svm_instruction_addresses and not msr_names:
         return TrackScanResult(track="svm", classification="SVM-NONE")
 
-    if svm_instruction_addresses and (efer_svme_sequence or hsave_write):
+    local_initialization = any(
+        abs(instruction_address - initialization_address) <= 0x400
+        for instruction_address in svm_instruction_addresses
+        for initialization_address in initialization_addresses
+    )
+    if svm_instruction_addresses and local_initialization:
         classification = "SVM-INITIALIZED"
         confidence = Confidence.MEDIUM
         status = SurfaceStatus.INFERRED
@@ -146,7 +164,7 @@ def scan_svm(image: BinaryImage) -> TrackScanResult:
         confidence = Confidence.LOW
         status = SurfaceStatus.SUPPORTED
         unknowns = ["initialization", "control structure", "caller", "runtime role"]
-        if "EFER" in msr_names and not efer_svme_sequence:
+        if "EFER" in msr_names and not initialization_addresses:
             unknowns.append("EFER.SVME initialization sequence")
 
     if control_hint:
@@ -203,7 +221,6 @@ def scan_svm(image: BinaryImage) -> TrackScanResult:
     endpoint_id = "hardware:amd-svm"
     graph.add_node(GraphNode(function_id, NodeType.FUNCTION, {"address": function_address}))
     graph.add_node(GraphNode(endpoint_id, NodeType.HARDWARE_ENDPOINT, {"class": "SVM"}))
-    graph.add_edge(GraphEdge(function_id, endpoint_id, EdgeType.CONSUMES, {"status": classification}))
     return TrackScanResult(
         track="svm",
         classification=classification,

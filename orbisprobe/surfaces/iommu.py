@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from orbisprobe.analysis.binary import BinaryImage
 
-from .graph import EdgeType, GraphEdge, GraphNode, NodeType, ResearchGraph
+from .graph import GraphNode, NodeType, ResearchGraph
 from .model import (
     BoundaryType,
     Confidence,
@@ -129,14 +129,11 @@ def scan_iommu(image: BinaryImage) -> TrackScanResult:
             )
         )
 
-    independent_groups = {
-        "strings" if item.startswith("string:") else item
-        for item in categories
-    }
     string_category_count = sum(1 for item in categories if item.startswith("string:"))
     sufficient = (
-        len(independent_groups) >= 3
-        or (string_category_count >= 2 and "research_constant" in categories)
+        string_category_count >= 2
+        and "research_constant" in categories
+        and "descriptor_write" in categories
     )
     if not sufficient:
         diagnostics = []
@@ -144,6 +141,10 @@ def scan_iommu(image: BinaryImage) -> TrackScanResult:
             diagnostics.append(
                 "IOMMU/DMA anchors found but insufficient independent evidence; pattern-only hits were not promoted"
             )
+            for item in evidence:
+                role = item.raw.get("role")
+                if role:
+                    diagnostics.append(f"non-promoted decoded anchor: {role}")
         return TrackScanResult(track="iommu", classification="IOMMU-NONE", diagnostics=diagnostics)
 
     first_address = min(constant_addresses)
@@ -208,9 +209,6 @@ def scan_iommu(image: BinaryImage) -> TrackScanResult:
     graph.add_node(GraphNode(mapping_id, NodeType.MAPPING, {"validated": False}))
     graph.add_node(GraphNode(descriptor_id, NodeType.DESCRIPTOR, {"address_bearing": True}))
     graph.add_node(GraphNode(endpoint_id, NodeType.HARDWARE_ENDPOINT, {"class": "DMA/IOMMU"}))
-    graph.add_edge(GraphEdge(function_id, mapping_id, EdgeType.MAPS))
-    graph.add_edge(GraphEdge(mapping_id, descriptor_id, EdgeType.WRITES))
-    graph.add_edge(GraphEdge(descriptor_id, endpoint_id, EdgeType.SUBMITS))
     return TrackScanResult(
         track="iommu",
         classification="IOMMU-STRUCTURAL-CANDIDATE",
