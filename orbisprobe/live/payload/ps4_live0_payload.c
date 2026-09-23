@@ -431,9 +431,27 @@ static void cmd_kread_user(const char *line, uint64_t buf, uint64_t buflen) {
 
 /* ---- LIVE2: bounded split-view writer + double-read consumer -------------- */
 
+static uint64_t g_boot_nonce = 0;
+
 #define RACE_MAX_TRANS 100000u
 #define RACE_MAX_MS 100u
 #define RACE_RING 256u
+
+/* Writer lifecycle state machine (LIVE2.2.1): a new operation is only accepted in IDLE, the owner
+   waits for DONE of *its own* generation, joins the thread and verifies the counter is stable before
+   the next attempt may start. A late DONE from a previous generation can never unlock an attempt. */
+#define RACE_IDLE 0
+#define RACE_STARTING 1
+#define RACE_RUNNING 2
+#define RACE_STOPPING 3
+#define RACE_DONE 4
+#define RACE_HANDOVER_TIMEOUT_US 500000ull
+
+static volatile int g_race_state = RACE_IDLE;
+static volatile uint64_t g_race_gen = 0;       /* current attempt generation */
+static volatile uint64_t g_writer_gen = 0;     /* generation the running writer belongs to */
+static volatile uint64_t g_done_gen = 0;       /* generation whose writer observed DONE */
+static const char *g_race_state_names[5] = {"IDLE", "STARTING", "RUNNING", "STOPPING", "DONE"};
 
 static volatile int g_race_run = 0;
 static volatile int g_race_ready = 0;
@@ -454,11 +472,29 @@ static ScePthread g_race_thread = 0;
 /* Event/time-driven toggle engine: stops on request_done (g_race_run=0), max transitions or
    max writer runtime -- all three limits are hard. Records every transition with a timestamp. */
 static void *race_writer(void *arg) {
+  /* The generation of record is g_writer_gen: the owner sets it before creating this thread. The
+     pthread argument is deliberately NOT used as the source of truth -- a NULL/0 argument made the
+     writer believe it was generation 0, which broke the DONE binding (found live: gen=1/done_gen=0). */
   UNUSED(arg);
+  uint64_t gen = g_writer_gen;
   uint64_t t0 = sceKernelGetProcessTime();
   uint64_t value = g_race_val_b;
+  g_race_run = 1;
   g_race_ready = 1;
-  while (g_race_run) {
+  /* wait out STARTING (bounded): exiting here would race the owner's RUNNING transition */
+  while (g_race_state == RACE_STARTING && (sceKernelGetProcessTime() - t0) < 100000ull) {
+    scePthreadYield();
+  }
+  if (g_race_state != RACE_RUNNING || g_writer_gen != gen) {
+    g_race_state = RACE_STOPPING;
+    g_race_run = 0;
+    g_done_gen = gen;
+    g_race_done = 1;
+    g_race_state = RACE_DONE;
+    return 0;
+  }
+  /* only this generation, and only while the owner has it RUNNING, performs transitions */
+  while (g_race_state == RACE_RUNNING && g_writer_gen == gen && g_race_run) {
     value = (g_race_alternate && value == g_race_val_b) ? g_race_val_a : g_race_val_b;
     *(volatile uint64_t *)(g_race_base + g_race_off) = value;
     uint64_t now = sceKernelGetProcessTime();
@@ -478,9 +514,31 @@ static void *race_writer(void *arg) {
     if (g_race_mode == 1) scePthreadYield();
     else if (g_race_mode == 2) sceKernelUsleep(200);
   }
+  g_race_state = RACE_STOPPING;
   g_race_run = 0;
+  g_done_gen = gen;          /* DONE is generation-tagged: stale DONE cannot unlock a new attempt */
   g_race_done = 1;
+  g_race_state = RACE_DONE;
   return 0;
+}
+
+/* bounded hand-over: wait for THIS generation's DONE, join, then prove the writer stopped writing */
+static int race_handover(uint64_t gen, uint64_t *handover_us, int *joined, int *stable) {
+  uint64_t t0 = sceKernelGetProcessTime();
+  while (g_race_state != RACE_DONE && (sceKernelGetProcessTime() - t0) < RACE_HANDOVER_TIMEOUT_US) {
+    sceKernelUsleep(50);
+  }
+  *handover_us = sceKernelGetProcessTime() - t0;
+  if (g_race_state != RACE_DONE || g_done_gen != gen) {
+    return 0;                                   /* WRITER_HANDOVER_TIMEOUT: no new attempt may start */
+  }
+  int rc = scePthreadJoin(g_race_thread, 0);
+  *joined = (rc == 0) ? 1 : 0;
+  uint64_t before = g_race_count;
+  sceKernelUsleep(200);                         /* settle window */
+  uint64_t after = g_race_count;
+  *stable = (before == after) ? 1 : 0;          /* no transition after the joined DONE */
+  return 1;
 }
 
 static void cmd_race(const char *line) {
@@ -659,7 +717,7 @@ static void cmd_drw(const char *line) {
     sceKernelUsleep(100);
     waited += 100;
   }
-  char msg[4096];
+  char msg[8192];
   int mo = sprintf(msg, "OK DRW w1=0x%llx w2=0x%llx t1=%llu t2=%llu rst=%llu rdone=%llu ready=%d "
                         "trans=%llu ring_total=%llu other_rc=%d off=0x%llx",
                    (unsigned long long)w1, (unsigned long long)w2, (unsigned long long)rst,
@@ -671,6 +729,161 @@ static void cmd_drw(const char *line) {
   if (avail > 64) avail = 64;
   mo += sprintf(msg + mo, " avail=%llu trace=", (unsigned long long)avail);
   for (uint64_t i = 0; i < avail; i++) {
+    if (mo > (int)sizeof(msg) - 96) break;
+    uint64_t slot = (g_ring_head - avail + i) % RACE_RING;
+    mo += sprintf(msg + mo, "%s%llu:%llu:%llx:%llx", (i == 0) ? "" : ",",
+                  (unsigned long long)g_ring_id[slot], (unsigned long long)g_ring_ts[slot],
+                  (unsigned long long)g_ring_old[slot], (unsigned long long)g_ring_new[slot]);
+  }
+  send_frame(msg);
+}
+
+/* LIVE2.2: the discovered candidate chain, instantiated in payload-owned memory --
+   read #1 → validation/use → intervening kernel call → read #2 → consumer (destination write)
+   with the bounded writer toggling the field during the whole operation. */
+static void cmd_tr(const char *line) {
+  uint64_t base = 0, size = 0;
+  int ok = 0;
+  char raw[40];
+  select_buffer(line, &base, &size);
+  if (g_race_state != RACE_IDLE) {
+    char busy[160];
+    sprintf(busy, "ERR TR code=1 msg=busy state=%s gen=%llu done_gen=%llu",
+            g_race_state_names[g_race_state], (unsigned long long)g_race_gen,
+            (unsigned long long)g_done_gen);
+    send_frame(busy);
+    return;
+  }
+  if (!key_value(line, "off", raw, sizeof(raw))) {
+    send_frame("ERR TR code=2 msg=missing_off");
+    return;
+  }
+  uint64_t off = parse_hex_u64(raw, &ok);
+  if (!ok || off + 8 > size) {
+    send_frame("ERR TR code=3 msg=off_out_of_range");
+    return;
+  }
+  uint64_t dest = off + 0x40;
+  if (key_value(line, "dest", raw, sizeof(raw))) dest = parse_hex_u64(raw, &ok);
+  if (dest + 16 > size || (dest < off + 8 && dest + 16 > off)) {
+    send_frame("ERR TR code=4 msg=dest_out_of_range");
+    return;
+  }
+  int use_read2 = 1;
+  if (key_value(line, "use", raw, sizeof(raw))) use_read2 = (int)parse_hex_u64(raw, &ok);
+  if (!key_value(line, "a", raw, sizeof(raw))) {
+    send_frame("ERR TR code=5 msg=missing_a");
+    return;
+  }
+  uint64_t va = parse_hex_u64(raw, &ok);
+  if (!ok || !key_value(line, "b", raw, sizeof(raw))) {
+    send_frame("ERR TR code=6 msg=missing_b");
+    return;
+  }
+  uint64_t vb = parse_hex_u64(raw, &ok);
+  if (!ok) {
+    send_frame("ERR TR code=7 msg=bad_b");
+    return;
+  }
+  g_race_max_ms = 50;
+  g_race_max_trans = 100000;
+  g_race_mode = 0;
+  g_race_alternate = 1;
+  if (key_value(line, "ms", raw, sizeof(raw))) g_race_max_ms = parse_hex_u64(raw, &ok);
+  if (key_value(line, "mode", raw, sizeof(raw))) g_race_mode = (int)parse_hex_u64(raw, &ok);
+  if (key_value(line, "alt", raw, sizeof(raw))) g_race_alternate = (int)parse_hex_u64(raw, &ok);
+  if (g_race_max_ms == 0 || g_race_max_ms > RACE_MAX_MS || g_race_mode > 2) {
+    send_frame("ERR TR code=8 msg=bounds");
+    return;
+  }
+  uint64_t gen = g_race_gen + 1;
+  g_race_gen = gen;
+  g_race_base = base;
+  g_race_off = off;
+  g_race_val_a = va;
+  g_race_val_b = vb;
+  /* per-attempt reset only at this point: previous generation joined, state is IDLE */
+  g_race_count = 0;
+  g_ring_head = 0;
+  g_ring_total = 0;
+  g_race_t_first = 0;
+  g_race_t_last = 0;
+  g_race_ready = 0;
+  g_race_done = 0;
+  g_race_run = 0;
+  g_writer_gen = gen;
+  g_race_state = RACE_STARTING;
+  if (scePthreadCreate(&g_race_thread, 0, race_writer, (void *)(uintptr_t)gen, "live2race") != 0) {
+    g_race_state = RACE_IDLE;
+    send_frame("ERR TR code=9 msg=thread_create_failed");
+    return;
+  }
+  uint64_t hs = sceKernelGetProcessTime();
+  while (!g_race_ready && (sceKernelGetProcessTime() - hs) < 100000ull) sceKernelUsleep(50);
+  if (!g_race_ready) {
+    g_race_state = RACE_STOPPING;
+    char msg[160];
+    sprintf(msg, "ERR TR code=10 msg=writer_ready_timeout gen=%llu", (unsigned long long)gen);
+    send_frame(msg);
+    return;
+  }
+  if (g_race_state == RACE_STARTING) {
+    g_race_state = RACE_RUNNING;      /* never overwrite a state the writer already advanced */
+  }
+  /* do not open the request window before the writer has written at least once: otherwise read #1
+     can still observe the value left by an earlier experiment (found live: A/A produced 1 split) */
+  uint64_t wait0 = sceKernelGetProcessTime();
+  while (g_race_count == 0 && (sceKernelGetProcessTime() - wait0) < 100000ull) sceKernelUsleep(20);
+  if (g_race_count == 0) {
+    g_race_state = RACE_STOPPING;
+    char msg[160];
+    sprintf(msg, "ERR TR code=12 msg=writer_first_transition_timeout gen=%llu",
+            (unsigned long long)gen);
+    send_frame(msg);
+    return;
+  }
+  uint64_t rst = sceKernelGetProcessTime();
+  uint64_t r1 = *(volatile uint64_t *)(base + off);              /* read #1 */
+  int val_rc = (r1 == g_race_val_a) ? 0 : 1;                     /* validation/use of read #1 */
+  static uint64_t tr_scratch[4];
+  uint64_t other = (base == g_buf_a) ? g_buf_b : g_buf_a;
+  int krc = get_memory_dump(other, tr_scratch, 32);               /* intervening kernel call */
+  uint64_t r2 = *(volatile uint64_t *)(base + off);              /* read #2 */
+  uint64_t consumer_value = use_read2 ? r2 : r1;                 /* consumer decision */
+  *(volatile uint64_t *)(base + dest) = consumer_value;           /* consumer effect */
+  uint64_t rdone = sceKernelGetProcessTime();
+  g_race_state = RACE_STOPPING;
+  uint64_t handover_us = 0;
+  int joined = 0, stable = 0;
+  if (!race_handover(gen, &handover_us, &joined, &stable)) {
+    char msg[220];
+    sprintf(msg, "ERR TR code=11 msg=WRITER_HANDOVER_TIMEOUT gen=%llu done_gen=%llu state=%s "
+                 "handover_us=%llu",
+            (unsigned long long)gen, (unsigned long long)g_done_gen, g_race_state_names[g_race_state],
+            (unsigned long long)handover_us);
+    send_frame(msg);
+    return;                                  /* no new writer started; attempt is not accepted */
+  }
+  uint64_t trans_final = g_race_count;
+  uint64_t ring_final = g_ring_total;
+  g_race_state = RACE_IDLE;                  /* only now may the next attempt begin */
+  char msg[8192];
+  int mo = sprintf(msg, "OK TR r1=0x%llx r2=0x%llx t1=%llu t2=%llu val_rc=%d krc=%d use=%d dest=0x%llx "
+                        "gen=%llu done_gen=%llu joined=%d stable=%d handover_us=%llu state=%s "
+                        "trans=%llu ring_total=%llu destbuf=",
+                   (unsigned long long)r1, (unsigned long long)r2, (unsigned long long)rst,
+                   (unsigned long long)rdone, val_rc, krc, use_read2, (unsigned long long)dest,
+                   (unsigned long long)gen, (unsigned long long)g_done_gen, joined, stable,
+                   (unsigned long long)handover_us, g_race_state_names[RACE_IDLE],
+                   (unsigned long long)trans_final, (unsigned long long)ring_final);
+  const uint8_t *dbuf = (const uint8_t *)(base + dest);
+  for (int i = 0; i < 16; i++) mo += sprintf(msg + mo, "%02x", dbuf[i]);
+  uint64_t total = g_ring_total;
+  uint64_t avail = (total < RACE_RING) ? total : RACE_RING;
+  if (avail > 64) avail = 64;
+  mo += sprintf(msg + mo, " avail=%llu trace=", (unsigned long long)avail);
+  for (uint64_t i = 0; i < avail; i++) {
+    if (mo > (int)sizeof(msg) - 96) break;
     uint64_t slot = (g_ring_head - avail + i) % RACE_RING;
     mo += sprintf(msg + mo, "%s%llu:%llu:%llx:%llx", (i == 0) ? "" : ",",
                   (unsigned long long)g_ring_id[slot], (unsigned long long)g_ring_ts[slot],
@@ -704,10 +917,11 @@ static void cmd_rtrace(const char *line) {
   uint64_t total = g_ring_total;
   uint64_t avail = (total < RACE_RING) ? total : RACE_RING;
   if (want > avail) want = avail;
-  char msg[4096];
+  char msg[8192];
   int off = sprintf(msg, "OK RTRACE ring_total=%llu avail=%llu trace=", (unsigned long long)total,
                     (unsigned long long)avail);
   for (uint64_t i = 0; i < want; i++) {
+    if (off > (int)sizeof(msg) - 96) break;
     uint64_t slot = (g_ring_head - want + i) % RACE_RING;
     off += sprintf(msg + off, "%s%llu:%llu:%llx:%llx", (i == 0) ? "" : ",",
                    (unsigned long long)g_ring_id[slot], (unsigned long long)g_ring_ts[slot],
@@ -772,9 +986,11 @@ int _main(struct thread *td) {
   }
 
   char out[512];
-  sprintf(out, "OK HELLO payload=%s fw=%u kbase=0x%llx instance=0x%llx pid=0x%x",
+  /* nonce: startup timestamp, so the host can tell a fresh greeting from a stale session */
+  g_boot_nonce = sceKernelGetProcessTime();
+  sprintf(out, "OK HELLO payload=%s fw=%u kbase=0x%llx instance=0x%llx pid=0x%x nonce=%llu",
           PAYLOAD_ID, (unsigned)fw, (unsigned long long)kbase, (unsigned long long)g_instance,
-          (unsigned)getpid());
+          (unsigned)getpid(), (unsigned long long)g_boot_nonce);
   send_frame(out);
 
   uint64_t t0 = sceKernelGetProcessTime();
@@ -850,6 +1066,8 @@ int _main(struct thread *td) {
       cmd_rstop();
     } else if (line[0] == 'R' && line[1] == 'T' && line[2] == 'R' && line[3] == 'A') {
       cmd_rtrace(line);
+    } else if (line[0] == 'T' && line[1] == 'R') {
+      cmd_tr(line);
     } else if (line[0] == 'Q' && line[1] == 'U' && line[2] == 'I' && line[3] == 'T') {
       send_frame("OK BYE reason=quit");
       break;
