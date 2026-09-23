@@ -1,0 +1,42 @@
+{
+  "id": "case003-address-ab-template",
+  "title": "CASE-003 valid-address A/B template",
+  "hypothesis": "Changing only a valid mapped address changes the secure-side observable.",
+  "controlled_input": "Exactly one valid mapped address differs between cases A and B.",
+  "validation": "Prove branch safety, both mappings, and absence of reachable persistent sinks before execution.",
+  "consumer": "REPLACE_WITH_NAMED_CONSUMER",
+  "expected_effect": "Only the consumer-dependent secure-side response may differ.",
+  "observable": "Raw snapshots before and after A and B plus adapter status.",
+  "experiment": "Run one bounded A/B pair from the same baseline and compare snapshots.",
+  "risk": "active_request",
+  "preconditions": ["branch_safe", "two_valid_mapped_buffers", "no_persistent_sink_reachable"],
+  "forbidden_sinks": [
+    "bootloader_write", "code_page_write", "efuse", "firmware_commit",
+    "flash_write", "fsl_write", "key_provision", "nor_write", "nvram_write",
+    "nvs_write", "otp", "page_table_write", "persistent_state", "snvs_write",
+    "syscon_write", "update_install"
+  ],
+  "reachable_sinks": [],
+  "validation_steps": [
+    {"kind": "check_precondition", "args": {"name": "branch_safe"}},
+    {"kind": "check_precondition", "args": {"name": "two_valid_mapped_buffers"}},
+    {"kind": "check_precondition", "args": {"name": "no_persistent_sink_reachable"}}
+  ],
+  "steps": [
+    {"kind": "snapshot_state", "args": {"name": "T0"}},
+    {"kind": "execute_named_case", "args": {"case": "A", "iterations": 1}},
+    {"kind": "snapshot_state", "args": {"name": "A_after"}},
+    {"kind": "execute_named_case", "args": {"case": "B", "iterations": 1}},
+    {"kind": "snapshot_state", "args": {"name": "B_after"}}
+  ],
+  "oracles": [
+    {"kind": "changed", "args": {"a": 2, "b": 4}}
+  ],
+  "restore_steps": [],
+  "stop_on": ["fault", "unexpected_reboot", "control_channel_loss"],
+  "metadata": {
+    "live_target": true,
+    "template_only": true,
+    "requires_manual_case_definition": true
+  }
+}

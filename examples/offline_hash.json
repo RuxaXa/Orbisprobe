@@ -1,0 +1,14 @@
+{
+  "id": "offline-kernel-hash",
+  "title": "Hash kernel RX",
+  "hypothesis": "The analyzed kernel artifact is the expected immutable input.",
+  "risk": "offline",
+  "preconditions": [],
+  "forbidden_sinks": [],
+  "steps": [
+    {"kind": "hash_file", "args": {"path": "inputs/fw900-kernel-rx.bin"}}
+  ],
+  "oracles": [],
+  "restore_steps": [],
+  "metadata": {"case": "baseline"}
+}

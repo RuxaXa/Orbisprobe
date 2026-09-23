@@ -1,0 +1,38 @@
+{
+  "id": "reversible-kernel-ram-template",
+  "title": "Reversible kernel RAM experiment template",
+  "hypothesis": "A bounded RAM-only mutation changes a selected oracle and restores cleanly.",
+  "controlled_input": "One hash-pinned replacement byte sequence at one named RAM address.",
+  "validation": "Confirm field semantics, RAM-only lifetime, saved original bytes, and live control channel.",
+  "consumer": "REPLACE_WITH_NAMED_CONSUMER",
+  "expected_effect": "The named oracle changes only while the replacement bytes are present.",
+  "observable": "Pre-image, post-write readback, oracle result, restore readback, and adapter status.",
+  "experiment": "Read pre-image, perform one bounded write, observe once, restore, and verify byte identity.",
+  "risk": "reversible_kernel_ram",
+  "preconditions": ["target_field_semantics_confirmed", "nonpersistent", "original_bytes_saved", "control_channel_ready"],
+  "forbidden_sinks": [
+    "bootloader_write", "code_page_write", "efuse", "firmware_commit",
+    "flash_write", "fsl_write", "key_provision", "nor_write", "nvram_write",
+    "nvs_write", "otp", "page_table_write", "persistent_state", "snvs_write",
+    "syscon_write", "update_install"
+  ],
+  "reachable_sinks": [],
+  "validation_steps": [
+    {"kind": "check_precondition", "args": {"name": "target_field_semantics_confirmed"}},
+    {"kind": "check_precondition", "args": {"name": "nonpersistent"}},
+    {"kind": "check_precondition", "args": {"name": "original_bytes_saved"}},
+    {"kind": "check_precondition", "args": {"name": "control_channel_ready"}}
+  ],
+  "steps": [
+    {"kind": "read_memory", "args": {"address": "REPLACE", "length": 8}},
+    {"kind": "write_memory", "args": {"address": "REPLACE", "data_hex": "00"}},
+    {"kind": "read_memory", "args": {"address": "REPLACE", "length": 8}}
+  ],
+  "oracles": [],
+  "restore_steps": [
+    {"kind": "write_saved_original", "args": {"from_step": 0}},
+    {"kind": "verify_restored", "args": {"from_step": 0}}
+  ],
+  "stop_on": ["fault", "unexpected_reboot", "control_channel_loss"],
+  "metadata": {"live_target": true, "template_only": true}
+}
