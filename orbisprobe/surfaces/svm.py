@@ -40,6 +40,7 @@ def scan_svm(image: BinaryImage) -> TrackScanResult:
     svm_instruction_addresses: list[int] = []
     msr_names: set[str] = set()
     initialization_addresses: list[int] = []
+    efer_initialization_addresses: list[int] = []
     for expected_mnemonic, opcode in SVM_OPCODES.items():
         for address in image.find_bytes(opcode, max_hits=4096):
             instruction = image.decode_one(address)
@@ -117,32 +118,40 @@ def scan_svm(image: BinaryImage) -> TrackScanResult:
                             raw={"mnemonic": mnemonic, "msr": msr, "msr_name": msr_name},
                         )
                     )
-            if msr_name == "EFER" and any(
-                read < bit_set < write
-                for read in rdmsr_positions
-                for bit_set in svme_or_positions
-                for write in wrmsr_positions
-            ):
-                initialization_addresses.extend(
-                    window[write].address
-                    for write in wrmsr_positions
-                    if any(
-                        read < bit_set < write
-                        for read in rdmsr_positions
-                        for bit_set in svme_or_positions
-                    )
-                )
+            if msr_name == "EFER":
+                for read in rdmsr_positions:
+                    for bit_set in svme_or_positions:
+                        for write in wrmsr_positions:
+                            if not read < bit_set < write:
+                                continue
+                            clobbered = False
+                            for intervening in window[read + 1 : bit_set] + window[bit_set + 1 : write]:
+                                _read_ids, write_ids = intervening.regs_access()
+                                if any(
+                                    normalize_register(intervening.reg_name(register)) in {"rax", "rdx"}
+                                    for register in write_ids
+                                ):
+                                    clobbered = True
+                                    break
+                            if not clobbered:
+                                address = window[write].address
+                                efer_initialization_addresses.append(address)
+                                initialization_addresses.append(address)
 
     control_instructions = image.find_mov_immediate(0x1000, max_hits=4096)
     for address in image.find_bytes(bytes.fromhex("0d00100000"), max_hits=4096):
         instruction = image.decode_one(address)
         if instruction is not None and instruction.mnemonic == "or":
             control_instructions.append(instruction)
-    svm_anchor_addresses = [*svm_instruction_addresses, *[item.address for item in evidence if item.address]]
+    svm_function_starts = {
+        start
+        for address in svm_instruction_addresses
+        if (start := image.heuristic_function_start(address)) is not None
+    }
     local_control_instructions = [
         instruction
         for instruction in control_instructions
-        if any(abs(instruction.address - anchor) <= 0x200 for anchor in svm_anchor_addresses)
+        if image.heuristic_function_start(instruction.address) in svm_function_starts
     ]
     control_hint = bool(local_control_instructions)
 
@@ -150,8 +159,7 @@ def scan_svm(image: BinaryImage) -> TrackScanResult:
         return TrackScanResult(track="svm", classification="SVM-NONE")
 
     local_initialization = any(
-        abs(instruction_address - initialization_address) <= 0x400
-        for instruction_address in svm_instruction_addresses
+        image.heuristic_function_start(initialization_address) in svm_function_starts
         for initialization_address in initialization_addresses
     )
     if svm_instruction_addresses and local_initialization:
@@ -164,7 +172,7 @@ def scan_svm(image: BinaryImage) -> TrackScanResult:
         confidence = Confidence.LOW
         status = SurfaceStatus.SUPPORTED
         unknowns = ["initialization", "control structure", "caller", "runtime role"]
-        if "EFER" in msr_names and not initialization_addresses:
+        if "EFER" in msr_names and not efer_initialization_addresses:
             unknowns.append("EFER.SVME initialization sequence")
 
     if control_hint:

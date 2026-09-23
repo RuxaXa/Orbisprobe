@@ -73,3 +73,23 @@ def test_svm_svme_requires_eax_and_local_initialization(tmp_path: Path):
     )
     result = scan_svm(BinaryImage.open(binary, architecture="x86_64", base=0x8000))
     assert result.classification == "SVM-CAPABILITY-ONLY"
+
+
+def test_svm_svme_eax_lifetime_must_reach_wrmsr(tmp_path: Path):
+    stale = (
+        "55 48 89 e5 b9 80 00 00 c0 0f 32 0d 00 10 00 00 "
+        "b8 00 00 00 00 0f 30 0f 01 d8 c3"
+    )
+    result = scan_svm(image(tmp_path, "stale-eax.bin", stale))
+    assert result.classification == "SVM-CAPABILITY-ONLY"
+
+
+def test_svm_nearby_different_functions_do_not_combine_initialization(tmp_path: Path):
+    binary = tmp_path / "near-functions.bin"
+    binary.write_bytes(
+        bytes.fromhex("55 48 89 e5 0f 01 d8 c3")
+        + b"\x90" * 0x80
+        + bytes.fromhex("55 48 89 e5 b9 17 01 01 c0 0f 30 c3")
+    )
+    result = scan_svm(BinaryImage.open(binary, architecture="x86_64", base=0x9000))
+    assert result.classification == "SVM-CAPABILITY-ONLY"
