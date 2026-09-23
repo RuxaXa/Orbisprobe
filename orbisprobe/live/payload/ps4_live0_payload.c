@@ -429,6 +429,138 @@ static void cmd_kread_user(const char *line, uint64_t buf, uint64_t buflen) {
   send_frame(out);
 }
 
+/* ---- LIVE2: bounded split-view writer + double-read consumer -------------- */
+
+#define RACE_MAX_ITERS 100000u
+#define RACE_MAX_MS 5000u
+
+static volatile int g_race_run = 0;
+static volatile uint64_t g_race_count = 0;
+static volatile uint64_t g_race_t_first = 0;
+static volatile uint64_t g_race_t_last = 0;
+static volatile int g_race_alternate = 1;
+static uint64_t g_race_base = 0, g_race_off = 0, g_race_val_a = 0, g_race_val_b = 0;
+static uint64_t g_race_iters = 0, g_race_ms = 0;
+
+/* Toggle the shared field between exactly two valid values, bounded in iterations and runtime. */
+static void *race_writer(void *arg) {
+  UNUSED(arg);
+  uint64_t t0 = sceKernelGetProcessTime();
+  uint64_t value = g_race_val_b;
+  while (g_race_run) {
+    value = (g_race_alternate && value == g_race_val_b) ? g_race_val_a : g_race_val_b;
+    *(volatile uint64_t *)(g_race_base + g_race_off) = value;
+    g_race_count++;
+    uint64_t now = sceKernelGetProcessTime();
+    if (g_race_count == 1) g_race_t_first = now;
+    g_race_t_last = now;
+    if (g_race_count >= g_race_iters) break;
+    if ((now - t0) / 1000ull >= g_race_ms) break;
+  }
+  g_race_run = 0;
+  return 0;
+}
+
+static void cmd_race(const char *line) {
+  char raw[32], hexbuf[32];
+  int ok = 0;
+  uint64_t base = 0, size = 0;
+  select_buffer(line, &base, &size);
+  if (g_race_run) {
+    send_frame("ERR RACE code=1 msg=already_running");
+    return;
+  }
+  if (!key_value(line, "off", raw, sizeof(raw))) {
+    send_frame("ERR RACE code=2 msg=missing_off");
+    return;
+  }
+  g_race_off = parse_hex_u64(raw, &ok);
+  if (!ok || g_race_off + 8 > size) {
+    send_frame("ERR RACE code=3 msg=off_out_of_range");
+    return;
+  }
+  if (!key_value(line, "a", hexbuf, sizeof(hexbuf))) {
+    send_frame("ERR RACE code=4 msg=missing_a");
+    return;
+  }
+  g_race_val_a = parse_hex_u64(hexbuf, &ok);
+  if (!ok || !key_value(line, "b", hexbuf, sizeof(hexbuf))) {
+    send_frame("ERR RACE code=5 msg=bad_b");
+    return;
+  }
+  g_race_val_b = parse_hex_u64(hexbuf, &ok);
+  if (!ok) {
+    send_frame("ERR RACE code=6 msg=bad_b");
+    return;
+  }
+  g_race_iters = 1000;
+  g_race_ms = 200;
+  g_race_alternate = 1;
+  if (key_value(line, "iters", hexbuf, sizeof(hexbuf))) g_race_iters = parse_hex_u64(hexbuf, &ok);
+  if (key_value(line, "ms", hexbuf, sizeof(hexbuf))) g_race_ms = parse_hex_u64(hexbuf, &ok);
+  if (key_value(line, "alt", hexbuf, sizeof(hexbuf))) g_race_alternate = (int)parse_hex_u64(hexbuf, &ok);
+  if (g_race_iters == 0 || g_race_iters > RACE_MAX_ITERS || g_race_ms > RACE_MAX_MS) {
+    send_frame("ERR RACE code=7 msg=bounds");
+    return;
+  }
+  g_race_base = base;
+  g_race_count = 0;
+  g_race_t_first = 0;
+  g_race_t_last = 0;
+  g_race_run = 1;
+  ScePthread thread;
+  if (scePthreadCreate(&thread, 0, race_writer, 0, "live2race") != 0) {
+    g_race_run = 0;
+    send_frame("ERR RACE code=8 msg=thread_create_failed");
+    return;
+  }
+  scePthreadDetach(thread);
+  char msg[160];
+  sprintf(msg, "OK RACE started base=0x%llx off=0x%llx alt=%d iters=0x%llx ms=0x%llx",
+          (unsigned long long)base, (unsigned long long)g_race_off, g_race_alternate,
+          (unsigned long long)g_race_iters, (unsigned long long)g_race_ms);
+  send_frame(msg);
+}
+
+/* One consumer run: two reads of the SAME field with a real intervening kernel call. */
+static void cmd_dr(const char *line) {
+  uint64_t base = 0, size = 0;
+  select_buffer(line, &base, &size);
+  char raw[32];
+  int ok = 0;
+  if (!key_value(line, "off", raw, sizeof(raw))) {
+    send_frame("ERR DR code=1 msg=missing_off");
+    return;
+  }
+  uint64_t off = parse_hex_u64(raw, &ok);
+  if (!ok || off + 8 > size) {
+    send_frame("ERR DR code=2 msg=off_out_of_range");
+    return;
+  }
+  uint64_t other = (base == g_buf_a) ? g_buf_b : g_buf_a;
+  static uint64_t scratch[4];
+  uint64_t t1 = sceKernelGetProcessTime();
+  uint64_t w1 = *(volatile uint64_t *)(base + off);
+  int rc = get_memory_dump(other, scratch, 32); /* intervening helper call */
+  uint64_t w2 = *(volatile uint64_t *)(base + off);
+  uint64_t t2 = sceKernelGetProcessTime();
+  char msg[200];
+  sprintf(msg, "OK DR w1=0x%llx w2=0x%llx t1=%llu t2=%llu other_rc=%d",
+          (unsigned long long)w1, (unsigned long long)w2,
+          (unsigned long long)t1, (unsigned long long)t2, rc);
+  send_frame(msg);
+}
+
+static void cmd_rstop(void) {
+  g_race_run = 0;
+  sceKernelUsleep(2000);
+  char msg[200];
+  sprintf(msg, "OK RSTOP transitions=%llu t_first=%llu t_last=%llu",
+          (unsigned long long)g_race_count, (unsigned long long)g_race_t_first,
+          (unsigned long long)g_race_t_last);
+  send_frame(msg);
+}
+
 /* ---- entry ------------------------------------------------------------- */
 
 int _main(struct thread *td) {
@@ -436,6 +568,7 @@ int _main(struct thread *td) {
   initKernel();
   initLibc();
   initPthread();
+  /* LIVE2: the race writer thread is created lazily by the RACE command. */
   initNetwork();
   initSysUtil();
 
@@ -552,6 +685,12 @@ int _main(struct thread *td) {
       uint64_t sb = 0, ss = 0;
       select_buffer(line, &sb, &ss);
       cmd_kread_user(line, sb, ss);
+    } else if (line[0] == 'R' && line[1] == 'A' && line[2] == 'C' && line[3] == 'E') {
+      cmd_race(line);
+    } else if (line[0] == 'D' && line[1] == 'R') {
+      cmd_dr(line);
+    } else if (line[0] == 'R' && line[1] == 'S' && line[2] == 'T' && line[3] == 'O') {
+      cmd_rstop();
     } else if (line[0] == 'Q' && line[1] == 'U' && line[2] == 'I' && line[3] == 'T') {
       send_frame("OK BYE reason=quit");
       break;
