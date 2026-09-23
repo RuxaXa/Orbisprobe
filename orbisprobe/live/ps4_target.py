@@ -115,6 +115,28 @@ PAYLOAD_INFO_REQUIRED = (
 
 
 @dataclass(frozen=True)
+class BufferAllocation:
+    """One payload-owned allocation, with the provenance needed for its own ownership claim."""
+
+    name: str
+    allocation_method: str
+    allocation_base: int
+    allocation_return: int
+    allocation_size: int
+    generation: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "allocation_method": self.allocation_method,
+            "allocation_base": f"0x{self.allocation_base:x}",
+            "allocation_return": f"0x{self.allocation_return:x}",
+            "allocation_size": f"0x{self.allocation_size:x}",
+            "generation": self.generation,
+        }
+
+
+@dataclass(frozen=True)
 class PayloadInfo:
     """The single validated source of truth for payload-reported values.
 
@@ -139,6 +161,8 @@ class PayloadInfo:
     endpoint: str = ""
     test_buffer: int = 0
     test_buffer_size: int = 0
+    #: Per-buffer allocations (LIVE1 A/B). Empty when the payload reports only one buffer.
+    buffers: tuple[BufferAllocation, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -206,6 +230,36 @@ def parse_payload_info(
     if not firmware:
         missing.append("firmware")
     kbase = number("kbase", "kbase")
+    buffers: list[BufferAllocation] = []
+    for name, prefix in (("A", "buf_a"), ("B", "buf_b")):
+        raw_base = response.get(prefix)
+        if raw_base in (None, ""):
+            continue  # single-buffer payload: LIVE0 compatibility
+        base_v = as_int(raw_base)
+        ret_v = as_int(response.get(f"{prefix}_ret"))
+        size_v = as_int(response.get(f"{prefix}_size"))
+        gen_v = as_int(response.get(f"{prefix}_gen"))
+        local: list[str] = []
+        if not base_v:
+            local.append(f"buffer_{name.lower()}_base")
+        if base_v != ret_v:
+            local.append(f"buffer_{name.lower()}_return")
+        if size_v <= 0:
+            local.append(f"buffer_{name.lower()}_size")
+        if gen_v < 1:
+            local.append(f"buffer_{name.lower()}_generation")
+        missing.extend(local)
+        if not local:
+            buffers.append(
+                BufferAllocation(
+                    name=name,
+                    allocation_method=method,
+                    allocation_base=base_v,
+                    allocation_return=ret_v,
+                    allocation_size=size_v,
+                    generation=gen_v,
+                )
+            )
     if missing:
         return None, sorted(set(missing))
     return (
@@ -225,6 +279,7 @@ def parse_payload_info(
             endpoint=endpoint,
             test_buffer=allocation_base,
             test_buffer_size=allocation_size,
+            buffers=tuple(buffers),
         ),
         [],
     )
@@ -311,6 +366,7 @@ class Ps4LiveTarget(Target):
         self.test_buffer: int | None = None
         self.test_buffer_size: int = 0
         self.allocation: AllocationRecord | None = None
+        self.buffer_allocations: dict[str, AllocationRecord] = {}
         self.state_integrity_unknown = False
         self.state_integrity_reason = ""
         self.late_responses: list[dict[str, Any]] = []
@@ -664,6 +720,20 @@ class Ps4LiveTarget(Target):
         )
         return record
 
+    def plan_allocation_block(self, address: int, length: int) -> str | None:
+        """Staleness/ownership gate for a plan address, across single- and multi-buffer layouts."""
+
+        if self.allocation is not None and self.allocation.covers(address, length):
+            return self.allocation_block()
+        for name, record in self.buffer_allocations.items():
+            if record.covers(address, length):
+                return self.buffer_block(name)
+        if self.buffer_allocations:
+            return (
+                f"plan address 0x{address:x}+0x{length:x} is not inside any owned buffer allocation"
+            )
+        return self.allocation_block()
+
     def allocation_block(self) -> str | None:
         """Reasons the current allocation record may not be used for a mutation right now."""
 
@@ -694,6 +764,100 @@ class Ps4LiveTarget(Target):
         for current, captured, label in checks:
             if current != captured:
                 return f"STALE buffer: {label} changed since capture"
+        return None
+
+    def capture_buffer_allocations(
+        self,
+        *,
+        process_name: str = "unknown",
+        injection_pid: int | None = None,
+        test_offset: int = 0x100,
+        test_length: int = 32,
+    ) -> tuple[dict[str, AllocationRecord], dict[str, list[str]]]:
+        """Validate every reported buffer separately (LIVE1 A/B): one ownership claim per buffer."""
+
+        info = self.payload_info
+        records: dict[str, AllocationRecord] = {}
+        problems: dict[str, list[str]] = {}
+        if info is None or not info.buffers:
+            return {}, {"*": ["PAYLOAD_INFO_INCOMPLETE: no per-buffer allocations reported"]}
+        bases = [b.allocation_base for b in info.buffers]
+        for buffer in info.buffers:
+            reasons: list[str] = []
+            if buffer.allocation_method not in ALLOWED_ALLOCATION_CALLS:
+                reasons.append(f"A: allocation method {buffer.allocation_method!r} not allowed")
+            if buffer.allocation_base != buffer.allocation_return:
+                reasons.append("B: base is not the allocation result")
+            if buffer.allocation_size <= 0:
+                reasons.append("C: allocation size is zero")
+            if test_offset + test_length > buffer.allocation_size:
+                reasons.append("D: test range exceeds the allocation")
+            if not buffer.allocation_base or buffer.allocation_base >= USER_MAX:
+                reasons.append("B: base outside the user address range")
+            if bases.count(buffer.allocation_base) > 1:
+                reasons.append("E: two buffers share one allocation base")
+            if not info.instance_id:
+                reasons.append("E: instance id missing")
+            if not info.pid:
+                reasons.append("F: pid missing")
+            if buffer.generation < 1:
+                reasons.append("G: generation missing")
+            if not info.session_id or (
+                self.identity is not None and info.session_id != self.identity.session_id
+            ):
+                reasons.append("H: session missing or not the bound session")
+            if self.identity is None:
+                reasons.append("H: no identity bound to this attachment")
+            if injection_pid is not None and info.pid and injection_pid != info.pid:
+                reasons.append("CONFLICT: loader injection pid differs from the payload pid")
+            problems[buffer.name] = reasons
+            if not reasons:
+                record = AllocationRecord(
+                    session_id=info.session_id,
+                    pid=info.pid,
+                    process_name=process_name,
+                    allocation_call=buffer.allocation_method,
+                    allocation_base=buffer.allocation_base,
+                    allocation_size=buffer.allocation_size,
+                    allocation_generation=buffer.generation,
+                    payload_instance=info.instance_id,
+                    test_offset=test_offset,
+                    test_length=test_length,
+                    captured_utc=utc_now(),
+                )
+                records[buffer.name] = record
+        self.buffer_allocations = records
+        self.policy.owned_regions = tuple(
+            region_of(f"live1-buffer-{b.name.lower()}", b.allocation_base, b.allocation_size,
+                      AddressClass.USER)
+            for b in info.buffers
+        )
+        return records, problems
+
+    def buffer_block(self, name: str) -> str | None:
+        """Staleness gate for one buffer: never silently reuse an old allocation."""
+
+        record = self.buffer_allocations.get(name)
+        info = self.payload_info
+        if record is None:
+            return f"no ownership record for buffer {name}"
+        if info is None:
+            return "STALE buffer: no validated payload info"
+        current = next((b for b in info.buffers if b.name == name), None)
+        if current is None:
+            return f"STALE buffer: {name} is no longer reported by the payload"
+        checks = (
+            (info.instance_id, record.payload_instance, "payload instance"),
+            (info.pid, record.pid, "payload pid"),
+            (current.allocation_base, record.allocation_base, "allocation base"),
+            (current.generation, record.allocation_generation, "allocation generation"),
+            (info.session_id, record.session_id, "session"),
+        )
+        for now, then, label in checks:
+            if now != then:
+                return f"STALE buffer {name}: {label} changed since capture"
+        if self.identity is not None and info.session_id != self.identity.session_id:
+            return f"STALE buffer {name}: bound session changed"
         return None
 
     def test_range(self, length: int, offset: int | None = None) -> tuple[int, int]:
@@ -816,12 +980,22 @@ class Ps4LiveTarget(Target):
         # user-space test buffer is read through VERIFY (direct user load) instead, with KREAD_USER
         # available as an independent kernel-path cross-check.
         command = "VERIFY" if cls is AddressClass.USER else "READ"
+        selector = next(
+            (
+                label.lower()
+                for label, record in self.buffer_allocations.items()
+                if record.covers(address, length)
+            ),
+            None,
+        )
+        extra = {"buf": selector} if selector else {}
         try:
             response = self.channel.request(
                 command,
                 timeout=self.config.request_timeout,
                 kaddr=address,
                 len=length,
+                **extra,
             )
         except ChannelError as exc:
             self._emit(
@@ -996,22 +1170,11 @@ class Ps4LiveTarget(Target):
                 operation="write_memory",
             )
 
-        allocation_block = self.allocation_block()
+        allocation_block = self.plan_allocation_block(op.address, op.length)
         if allocation_block:
             return self._block(
                 test,
                 allocation_block,
-                address=op.address,
-                length=op.length,
-                operation="write_memory",
-                expected=f"canary over {op.length} bytes",
-            )
-
-        if self.allocation is not None and not self.allocation.covers(op.address, op.length):
-            return self._block(
-                test,
-                f"plan address 0x{op.address:x}+0x{op.length:x} is outside the allocated test "
-                f"buffer 0x{self.allocation.allocation_base:x}+0x{self.allocation.allocation_size:x}",
                 address=op.address,
                 length=op.length,
                 operation="write_memory",

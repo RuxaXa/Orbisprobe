@@ -39,6 +39,7 @@
 #define PAYLOAD_ID "live0-1"
 #define TEST_BUF_SIZE 0x1000u
 #define TEST_BUF_FILL 0x5Au
+#define TEST_BUF_FILL_B 0xA5u
 #define MAX_READ 0x1000u
 #define READ_BUDGET_BYTES (16u * 1024u * 1024u)
 #define LIFETIME_SECONDS 900u
@@ -67,6 +68,11 @@ static int g_alloc_seq = 0;
 static uint64_t g_alloc_ret = 0;
 static uint64_t g_alloc_size = 0;
 static uint64_t g_instance = 0;
+/* LIVE1: two independent payload-owned allocations with their own generation counters. */
+static uint64_t g_buf_a = 0, g_buf_b = 0;
+static uint64_t g_buf_a_ret = 0, g_buf_b_ret = 0;
+static uint64_t g_buf_a_size = 0, g_buf_b_size = 0;
+static int g_buf_a_gen = 0, g_buf_b_gen = 0;
 
 static int ssend(const void *b, int n) {
   const char *p = (const char *)b;
@@ -240,6 +246,19 @@ static int key_value(const char *line, const char *key, char *out, int cap) {
     }
   }
   out[0] = 0;
+  return 0;
+}
+
+/* Select the buffer named by buf=a|buf=b (default a) and return its base/size. */
+static int select_buffer(const char *line, uint64_t *base, uint64_t *size) {
+  char sel[8];
+  if (key_value(line, "buf", sel, sizeof(sel)) && (sel[0] == 'b' || sel[0] == 'B')) {
+    *base = g_buf_b;
+    *size = g_buf_b_size;
+    return 0;
+  }
+  *base = g_buf_a;
+  *size = g_buf_a_size;
   return 0;
 }
 
@@ -434,6 +453,24 @@ int _main(struct thread *td) {
   g_alloc_size = TEST_BUF_SIZE;
   memset(test_buf, TEST_BUF_FILL, TEST_BUF_SIZE);
 
+  /* Buffer A and Buffer B: two separate allocations, equal size, distinct deterministic fill. */
+  g_buf_a = (uint64_t)test_buf;
+  g_buf_a_ret = (uint64_t)test_buf;
+  g_buf_a_size = TEST_BUF_SIZE;
+  g_buf_a_gen = g_alloc_seq;
+  void *buf_b = mmap(NULL, TEST_BUF_SIZE, PROT_READ | PROT_WRITE,
+                     MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+  if ((int64_t)buf_b < 0) {
+    printf_notification("live1: mmap B failed");
+    return -1;
+  }
+  g_alloc_seq++;
+  g_buf_b = (uint64_t)buf_b;
+  g_buf_b_ret = (uint64_t)buf_b;
+  g_buf_b_size = TEST_BUF_SIZE;
+  g_buf_b_gen = g_alloc_seq;
+  memset(buf_b, TEST_BUF_FILL_B, TEST_BUF_SIZE);
+
   int *heap_block = (int *)malloc(64);
   int heap_stack_marker = 0;
 
@@ -485,24 +522,36 @@ int _main(struct thread *td) {
       sprintf(out,
               "OK INFO payload=%s fw=%u kbase=0x%llx sp=0x%llx text=0x%llx data=0x%llx "
               "stack=0x%llx heap=0x%llx buf=0x%llx buflen=0x%llx "
-              "alloc=mmap alloc_ret=0x%llx alloc_size=0x%llx alloc_seq=%d pid=0x%x instance=0x%llx",
+              "alloc=mmap alloc_ret=0x%llx alloc_size=0x%llx alloc_seq=%d pid=0x%x instance=0x%llx "
+              "buf_a=0x%llx buf_a_ret=0x%llx buf_a_size=0x%llx buf_a_gen=%d "
+              "buf_b=0x%llx buf_b_ret=0x%llx buf_b_size=0x%llx buf_b_gen=%d",
               PAYLOAD_ID, (unsigned)fw, (unsigned long long)kbase,
               (unsigned long long)(uint64_t)&line, (unsigned long long)(uint64_t)&cmd_read,
               (unsigned long long)(uint64_t)&g_sock, (unsigned long long)(uint64_t)&heap_stack_marker,
               (unsigned long long)(uint64_t)heap_block, (unsigned long long)(uint64_t)test_buf,
               (unsigned long long)TEST_BUF_SIZE,
               (unsigned long long)g_alloc_ret, (unsigned long long)g_alloc_size, g_alloc_seq,
-              (unsigned)getpid(), (unsigned long long)g_instance);
+              (unsigned)getpid(), (unsigned long long)g_instance,
+              (unsigned long long)g_buf_a, (unsigned long long)g_buf_a_ret,
+              (unsigned long long)g_buf_a_size, g_buf_a_gen,
+              (unsigned long long)g_buf_b, (unsigned long long)g_buf_b_ret,
+              (unsigned long long)g_buf_b_size, g_buf_b_gen);
       send_frame(out);
     } else if (line[0] == 'R' && line[1] == 'E' && line[2] == 'A' && line[3] == 'D') {
       cmd_read(line, (uint64_t)test_buf, TEST_BUF_SIZE);
     } else if (line[0] == 'W' && line[1] == 'R' && line[2] == 'I' && line[3] == 'T' &&
                line[4] == 'E') {
-      cmd_write(line, (uint64_t)test_buf, TEST_BUF_SIZE);
+      uint64_t sb = 0, ss = 0;
+      select_buffer(line, &sb, &ss);
+      cmd_write(line, sb, ss);
     } else if (line[0] == 'V' && line[1] == 'E' && line[2] == 'R' && line[3] == 'I') {
-      cmd_verify(line, (uint64_t)test_buf, TEST_BUF_SIZE);
+      uint64_t sb = 0, ss = 0;
+      select_buffer(line, &sb, &ss);
+      cmd_verify(line, sb, ss);
     } else if (line[0] == 'K' && line[1] == 'R' && line[2] == 'E' && line[3] == 'A') {
-      cmd_kread_user(line, (uint64_t)test_buf, TEST_BUF_SIZE);
+      uint64_t sb = 0, ss = 0;
+      select_buffer(line, &sb, &ss);
+      cmd_kread_user(line, sb, ss);
     } else if (line[0] == 'Q' && line[1] == 'U' && line[2] == 'I' && line[3] == 'T') {
       send_frame("OK BYE reason=quit");
       break;
@@ -515,6 +564,7 @@ int _main(struct thread *td) {
   printf_notification("live0: end");
   if (g_sock >= 0) sceNetSocketClose(g_sock);
   munmap(test_buf, TEST_BUF_SIZE);
+  if (g_buf_b) munmap((void *)g_buf_b, TEST_BUF_SIZE);
   if (heap_block) free(heap_block);
   return 0;
 }

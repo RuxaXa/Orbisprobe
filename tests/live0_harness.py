@@ -36,6 +36,7 @@ FAKE_KBASE = 0xFFFFFFFFD00D0000
 FAKE_BUFFER = 0x0000000021A00000  # a user-range address owned by the payload
 FAKE_BUFFER_LEN = 0x1000
 FAKE_PID = 0x2E
+FAKE_BUFFER_B = 0x0000000022A00000
 FAKE_TEST_OFFSET = 0x100
 FAKE_TEST_LENGTH = 32
 
@@ -71,6 +72,14 @@ def fake_payload_info(**overrides: Any) -> dict[str, Any]:
     }
     info.update(overrides)
     return info
+
+
+def two_buffer_info() -> dict[str, Any]:
+    """A parsed INFO dict that reports two payload-owned allocations (LIVE1 A/B)."""
+
+    return fake_payload_info(
+        buf_a=FAKE_BUFFER, buf_a_ret=FAKE_BUFFER, buf_a_size=FAKE_BUFFER_LEN, buf_a_gen=1, buf_b=FAKE_BUFFER_B, buf_b_ret=FAKE_BUFFER_B, buf_b_size=FAKE_BUFFER_LEN, buf_b_gen=2
+    )
 
 
 def make_policy(level: str = "LIVE0-U", kernel_base: int = FAKE_KBASE) -> LivePolicy:
@@ -178,7 +187,9 @@ class ScriptedChannel:
         reads: dict[str, bytes] | None = None,
         default_read_hex: str = "5a" * 0x1000,
         fail_on: dict[str, Any] | None = None,
+        buffers: bool = False,
     ) -> None:
+        self.buffers = buffers
         self.reads = reads or {}
         self.default_read_hex = default_read_hex
         self.fail_on = fail_on or {}
@@ -205,6 +216,18 @@ class ScriptedChannel:
             raise ChannelError("malformed_response", "simulated garbage")
         if fault == "partial_response":
             raise ChannelError("partial_response", "simulated truncation")
+        extra: dict[str, Any] = {}
+        if self.buffers:
+            extra = {
+                "buf_a": f"0x{FAKE_BUFFER:016x}",
+                "buf_a_ret": f"0x{FAKE_BUFFER:016x}",
+                "buf_a_size": f"0x{FAKE_BUFFER_LEN:x}",
+                "buf_a_gen": "1",
+                "buf_b": f"0x{FAKE_BUFFER_B:016x}",
+                "buf_b_ret": f"0x{FAKE_BUFFER_B:016x}",
+                "buf_b_size": f"0x{FAKE_BUFFER_LEN:x}",
+                "buf_b_gen": "2",
+            }
         if command == "PING":
             return {"ok": True, "command": "PING", "payload": "live0-1", "uptime_ms": "10"}
         if command == "INFO":
@@ -227,6 +250,7 @@ class ScriptedChannel:
                 "alloc_seq": "1",
                 "pid": f"0x{FAKE_PID:x}",
                 "instance": "0x1234abcd",
+                **extra,
             }
         if command in {"READ", "KREAD_USER"}:
             address = int(fields["kaddr"])
@@ -258,6 +282,20 @@ class ScriptedChannel:
                     "command": command,
                     "rc": "0",
                     "hex": self.reads[key].hex(),
+                }
+            if FAKE_BUFFER_B <= address and address + length <= FAKE_BUFFER_B + FAKE_BUFFER_LEN:
+                base_b = self._state.setdefault("buffer_b", bytearray(b"\xa5" * FAKE_BUFFER_LEN))
+                if command == "WRITE":
+                    data = bytes.fromhex(fields["hex"])
+                    base_b[address - FAKE_BUFFER_B : address - FAKE_BUFFER_B + len(data)] = data
+                    return {"ok": True, "command": "WRITE", "rc": "0"}
+                return {
+                    "ok": True,
+                    "command": command,
+                    "rc": "0",
+                    "hex": bytes(
+                        base_b[address - FAKE_BUFFER_B : address - FAKE_BUFFER_B + length]
+                    ).hex(),
                 }
             if FAKE_BUFFER <= address and address + length <= FAKE_BUFFER + FAKE_BUFFER_LEN:
                 base = self._state.setdefault("buffer", bytearray(b"\x5a" * FAKE_BUFFER_LEN))
