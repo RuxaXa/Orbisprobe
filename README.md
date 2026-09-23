@@ -8,7 +8,8 @@
 ## v0.2-M1 privilege-surface discovery
 
 M1 adds offline-only scanners and a conservative x86-64 register-lifetime engine. Architecture and
-claim boundaries are documented in [`docs/M1-ARCHITECTURE.md`](docs/M1-ARCHITECTURE.md).
+claim boundaries are documented in [`docs/M1-ARCHITECTURE.md`](docs/M1-ARCHITECTURE.md); verified
+milestone results are in [`docs/M1-REPORT.md`](docs/M1-REPORT.md).
 
 ```bash
 orbisprobe privilege-surface svm kernel.bin --base 0xffffffffd9918000
