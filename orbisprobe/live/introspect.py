@@ -66,13 +66,20 @@ def rebound_object_address(object_static_va: int, *, dump_base: int, live_base: 
 
 
 def pointer_sanity(value: int, *, kernel_base: int, kernel_text_end: int, kernel_image_end: int,
-                   expected_class: str | None = None) -> tuple[bool, str, str]:
+                   expected_class: str | None = None, require_alignment: bool = True) -> tuple[bool, str, str]:
+    """Canonical, inside a readable class, never MMIO/unknown.
+
+    ``require_alignment`` is a *data-pointer* heuristic. On x86-64 a code/function pointer needs no
+    8-byte alignment, so code targets are judged by the tier model in :mod:`orbisprobe.live.layout`
+    (instruction boundary / function start / data-not-code) - never by alignment (LIVE2.9).
+    """
+
     if value == 0:
         return False, "null pointer", UNKNOWN
     if not is_canonical(value):
         return False, "not canonical", UNKNOWN
-    if value % 8 != 0:
-        return False, "not 8-byte aligned", UNKNOWN
+    if require_alignment and value % 8 != 0:
+        return False, "not 8-byte aligned (data-pointer heuristic)", UNKNOWN
     klass = classify_address(value, kernel_base=kernel_base, kernel_text_end=kernel_text_end,
                              kernel_image_end=kernel_image_end)
     if klass in (MMIO, UNKNOWN):

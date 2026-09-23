@@ -89,9 +89,13 @@ def test_invalid_function_pointer_rejection():
                                     function_starts=FUNCTIONS)[0] == CALLBACK_TARGET_CONFIRMED
 
 
-def test_pointer_sanity_requires_alignment_and_class():
+def test_pointer_sanity_alignment_is_a_data_pointer_heuristic_only():
+    # LIVE2.9: alignment applies to data pointers (default); code targets must not be judged this way
     ok, reason, _ = pointer_sanity(KB + 0x4AC8F1, kernel_base=KB, kernel_text_end=TEXT_END, kernel_image_end=IMAGE_END)
-    assert not ok and "aligned" in reason
+    assert not ok and "data-pointer heuristic" in reason
+    ok_code, _, _ = pointer_sanity(KB + 0x4AC8F1, kernel_base=KB, kernel_text_end=TEXT_END,
+                                   kernel_image_end=IMAGE_END, require_alignment=False)
+    assert ok_code, "an unaligned code-pointer candidate must not be rejected for alignment"
     ok2, _, klass = pointer_sanity(KB + 0x4AC8F0, kernel_base=KB, kernel_text_end=TEXT_END,
                                    kernel_image_end=IMAGE_END, expected_class=KERNEL_TEXT)
     assert ok2 and klass == KERNEL_TEXT
