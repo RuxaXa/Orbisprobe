@@ -1,8 +1,11 @@
+import pytest
+
 from orbisprobe.backends.base import (
     BackendCapability,
     BackendEvidence,
     BackendIdentity,
     BackendResult,
+    BackendStatus,
 )
 from orbisprobe.backends.consensus import (
     ConsensusClassification,
@@ -102,7 +105,12 @@ def test_register_lifetime_requires_cross_check_when_second_source_available():
 
 
 def test_incomplete_results_are_reported_but_do_not_vote():
-    unavailable = BackendResult.incomplete(identity("angr", "angr-vex"), "state ceiling")
+    unavailable = BackendResult(
+        identity("angr", "angr-vex"),
+        BackendStatus.ANALYSIS_INCOMPLETE,
+        evidence=[BackendEvidence("value_domain", "r15@consumer", 2)],
+        partial=True,
+    )
     report = ConsensusEngine().combine(
         [result("native", "capstone-native", 1), unavailable]
     )
@@ -124,12 +132,41 @@ def test_support_and_refutation_are_conflict_without_majority_vote():
 
 
 def test_unanimous_refutation_is_disproved_not_supported():
-    refuting = result("ghidra", "ghidra-pcode", "reachable")
-    refuting.evidence[0] = BackendEvidence(
-        "value_domain",
-        "r15@consumer",
-        "reachable",
-        confidence="DISPROVED",
-    )
-    claim = ConsensusEngine().combine([refuting]).claims[0]
+    refuting = []
+    for name, family in (("ghidra", "ghidra-pcode"), ("angr", "angr-vex")):
+        item = result(name, family, "reachable")
+        item.evidence[0] = BackendEvidence(
+            "value_domain",
+            "r15@consumer",
+            "reachable",
+            confidence="DISPROVED",
+        )
+        refuting.append(item)
+    claim = ConsensusEngine().combine(refuting).claims[0]
     assert claim.classification is ConsensusClassification.DISPROVED
+    assert claim.independent_source_count == 2
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        BackendStatus.TIMEOUT,
+        BackendStatus.ERROR,
+        BackendStatus.BACKEND_UNAVAILABLE,
+        BackendStatus.RESOURCE_LIMIT,
+        BackendStatus.PARTIAL,
+    ],
+)
+def test_noncomplete_backend_statuses_never_vote(status):
+    failed = BackendResult(
+        identity("failed", f"family-{status.value}"),
+        status,
+        evidence=[BackendEvidence("value_domain", "r15@consumer", 99)],
+        partial=True,
+    )
+    report = ConsensusEngine().combine(
+        [result("native", "capstone-native", 1), failed]
+    )
+    assert len(report.claims) == 1
+    assert report.claims[0].value == 1
+    assert report.claims[0].classification is ConsensusClassification.SUPPORTED

@@ -25,6 +25,22 @@
       "expected_native_consumer": false
     },
     {
+      "id": "stale-eax",
+      "binary_hex": "55 48 89 e5 b9 80 00 00 c0 0f 32 0d 00 10 00 00 b8 00 00 00 00 0f 30 0f 01 d8 c3",
+      "base": 13631488,
+      "function": 13631488,
+      "function_end": 13631515,
+      "expected_native_classification": "SVM-CAPABILITY-ONLY"
+    },
+    {
+      "id": "stale-edx",
+      "binary_hex": "55 48 89 e5 b9 80 00 00 c0 0f 32 0d 00 10 00 00 ba 00 00 00 00 0f 30 0f 01 d8 c3",
+      "base": 14680064,
+      "function": 14680064,
+      "function_end": 14680091,
+      "expected_native_classification": "SVM-CAPABILITY-ONLY"
+    },
+    {
       "id": "dead-stack-slot",
       "binary_hex": "48 89 bd 70 ff ff ff c3",
       "base": 6291456,

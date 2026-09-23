@@ -173,6 +173,11 @@ class DataflowAnalyzer:
                     )
 
             if instruction.mnemonic == "call":
+                if "callee-saved preservation assumed for unknown callee" not in result.unknowns:
+                    result.unknowns.append(
+                        "call-clobber model assumes SysV AMD64 caller-saved semantics and assumes "
+                        "an unknown callee preserves callee-saved registers"
+                    )
                 for register in sorted(set(tracked) & CALLER_SAVED):
                     result.events.append(
                         DataflowEvent(
@@ -184,6 +189,13 @@ class DataflowAnalyzer:
                         )
                     )
                     tracked.pop(register, None)
+
+            if instruction.mnemonic in {"syscall", "sysenter", "int"}:
+                result.call_clobber_complete = False
+                if "syscall/int clobber semantics not modelled" not in result.unknowns:
+                    result.unknowns.append(
+                        "syscall/sysenter/int clobber rcx and r11; not modelled"
+                    )
 
             for register in sorted(write_registers & tracked.keys()):
                 if register in propagated_destinations:

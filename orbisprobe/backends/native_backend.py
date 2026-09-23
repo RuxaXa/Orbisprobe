@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as distribution_version
 from pathlib import Path
 from typing import Any
 
@@ -52,10 +54,10 @@ class NativeBackend(AnalysisBackend):
 
     def version(self) -> str:
         try:
-            import capstone
+            import capstone  # noqa: F401 - import verifies the runtime module is usable
 
-            return str(capstone.__version__)
-        except ImportError:
+            return distribution_version("capstone")
+        except (ImportError, PackageNotFoundError):
             return "unavailable"
 
     def availability(self) -> BackendResult:

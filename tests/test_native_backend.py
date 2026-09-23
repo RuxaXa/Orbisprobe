@@ -1,3 +1,4 @@
+from importlib.metadata import version as distribution_version
 from pathlib import Path
 
 from orbisprobe.backends.base import BackendCapability, BackendStatus
@@ -25,3 +26,10 @@ def test_native_backend_implements_common_contract(tmp_path: Path):
     assert any(item["kind"] == "definition" for item in result.data["events"])
     assert any(item["kind"] == "call_clobber" for item in result.data["events"])
     assert result.evidence
+
+
+def test_native_backend_uses_pinned_capstone_distribution_version():
+    backend = NativeBackend()
+    assert distribution_version("capstone") == "5.0.9"
+    assert backend.version() == "5.0.9"
+    assert backend.identity.version == "5.0.9"

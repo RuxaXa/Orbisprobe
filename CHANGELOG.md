@@ -3,8 +3,21 @@
 ## 0.2.0.dev2 — M2-A multi-engine analysis
 
 - Added a capability-based backend API with structured availability, timeout, resource, partial, and error states.
-- Added a SHA-256/version/base/parameter-bound analysis cache.
-- Added Native Capstone, isolated angr 9.2.184, and Ghidra 12.1.3 Headless/P-code backends.
+- Added a SHA-256/version/base/parameter-bound, HMAC-authenticated analysis cache.
+- Added strict typed/schema validation of external backend JSON, including nested P-code and
+  instruction fields and rejection of non-finite JSON constants.
+- Added a backend source-class allowlist so engine output can never declare runtime evidence and
+  therefore can never promote a claim to `CONFIRMED`.
+- Added per-backend failure isolation: a raising adapter yields a structured `ERROR` result while the
+  remaining engines keep running and keep voting.
+- Added explicit unknowns for the register-lifetime ABI assumption and unmodelled
+  `syscall`/`sysenter`/`int` clobbering.
+- Enforced the runtime evidence channel structurally and constrained evidence addresses to integer
+  or null, closing the last unvalidated evidence field.
+- Extended per-backend isolation to adapter construction, availability probing, cache
+  fingerprinting, and argument coercion.
+- Added Native Capstone 5.0.9, isolated angr 9.2.184, and Ghidra 12.1.3 Headless/P-code backends.
+- Added explicit Ghidra `FULL_ANALYSIS`, `BOUNDED_ANALYSIS`, and `PARTIAL_ANALYSIS` modes with effective capabilities.
 - Added bounded angr CFGFast, ReachingDefinitions, dependency, symbolic-domain, and path-constraint analysis.
 - Added Ghidra function, call, xref, P-code, memory, parameter, stack, and decompiler export.
 - Added independence-aware consensus and `EVIDENCE_CONFLICT` handling.

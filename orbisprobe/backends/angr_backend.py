@@ -15,6 +15,7 @@ from .base import (
     BackendResult,
     BackendStatus,
     ResourceLimits,
+    ensure_json_domain,
 )
 
 CAPABILITIES = frozenset(
@@ -65,6 +66,39 @@ class AngrBackend(AnalysisBackend):
         memory = self.limits.memory_mb * 1024 * 1024
         resource.setrlimit(resource.RLIMIT_AS, (memory, memory))
         resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+
+    @staticmethod
+    def _parse_worker_response(payload: str) -> dict[str, Any]:
+        def reject_constant(token: str) -> Any:
+            raise ValueError(f"non-finite JSON constant {token!r} is not accepted from a backend")
+
+        raw = json.loads(payload, parse_constant=reject_constant)
+        if not isinstance(raw, dict):
+            raise TypeError("worker response must be a JSON object")
+        if not isinstance(raw.get("status"), str):
+            raise TypeError("worker response status must be a string")
+        BackendStatus(raw["status"])
+        if not isinstance(raw.get("version"), str):
+            raise TypeError("worker response version must be a string")
+        for key, default_type in (
+            ("data", dict),
+            ("evidence", list),
+            ("errors", list),
+            ("unknowns", list),
+            ("metrics", dict),
+        ):
+            if key in raw and not isinstance(raw[key], default_type):
+                raise TypeError(f"worker response {key} has invalid type")
+        if "partial" in raw and not isinstance(raw["partial"], bool):
+            raise TypeError("worker response partial must be boolean")
+        if any(not isinstance(item, dict) for item in raw.get("evidence", [])):
+            raise TypeError("worker evidence entries must be objects")
+        ensure_json_domain(raw.get("data", {}), "worker.data")
+        ensure_json_domain(raw.get("metrics", {}), "worker.metrics")
+        for index, item in enumerate(raw.get("evidence", [])):
+            ensure_json_domain(item.get("value"), f"worker.evidence[{index}].value")
+            ensure_json_domain(item.get("provenance"), f"worker.evidence[{index}].provenance")
+        return raw
 
     @staticmethod
     def _validate_request(request: dict[str, Any]) -> dict[str, Any]:
@@ -126,26 +160,27 @@ class AngrBackend(AnalysisBackend):
                 partial=True,
             )
         try:
-            raw = json.loads(completed.stdout)
-        except json.JSONDecodeError:
+            raw = self._parse_worker_response(completed.stdout)
+            version = raw["version"]
+            identity = self._identity(version)
+            status = BackendStatus(raw["status"])
+            errors = [str(item) for item in raw.get("errors", [])]
+            if completed.returncode != 0 and status is BackendStatus.COMPLETED:
+                status = BackendStatus.ERROR
+                errors.append(f"angr worker exited {completed.returncode}")
+            evidence = [BackendEvidence.from_dict(item) for item in raw.get("evidence", [])]
+        except (json.JSONDecodeError, TypeError, ValueError, KeyError) as exc:
             return BackendResult(
                 identity=self.identity,
                 status=BackendStatus.ERROR,
-                errors=["angr worker returned malformed JSON"],
+                errors=[f"angr worker returned invalid JSON response: {type(exc).__name__}: {exc}"],
                 metrics={"stderr": completed.stderr[-2000:]},
             )
-        version = str(raw.get("version", "unknown"))
-        identity = self._identity(version)
-        status = BackendStatus(raw.get("status", "ERROR"))
-        errors = [str(item) for item in raw.get("errors", [])]
-        if completed.returncode != 0 and status is BackendStatus.COMPLETED:
-            status = BackendStatus.ERROR
-            errors.append(f"angr worker exited {completed.returncode}")
         return BackendResult(
             identity=identity,
             status=status,
             data=dict(raw.get("data", {})),
-            evidence=[BackendEvidence.from_dict(item) for item in raw.get("evidence", [])],
+            evidence=evidence,
             errors=errors,
             unknowns=[str(item) for item in raw.get("unknowns", [])],
             partial=status

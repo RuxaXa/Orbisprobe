@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+import math
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass, field
 from enum import Enum
@@ -31,6 +32,40 @@ class BackendStatus(str, Enum):
     RESOURCE_LIMIT = "RESOURCE_LIMIT"
     PARTIAL = "PARTIAL"
     ERROR = "ERROR"
+
+
+#: Source classes a backend may attach to its own evidence. `runtime_real` is deliberately absent:
+#: it is reserved for OrbisProbe's own runtime-collection channel and can never be declared by
+#: external backend output.
+BACKEND_SOURCE_CLASSES = frozenset({"static", "symbolic", "inferred", "unattributed", "fixture"})
+RUNTIME_SOURCE_CLASS = "runtime_real"
+
+
+def ensure_json_domain(value: Any, path: str = "value") -> None:
+    """Reject values that are not representable in strict JSON.
+
+    Backends are external and untrusted: NaN, Infinity, sets, and other non-JSON types must be
+    rejected at the adapter boundary instead of breaking canonicalisation later (``allow_nan=False``
+    sinks in the cache and consensus engine raise on them).
+    """
+
+    if value is None or isinstance(value, (str, bool, int)):
+        return
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError(f"{path} must be a finite JSON number")
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise TypeError(f"{path} keys must be strings")
+            ensure_json_domain(item, f"{path}.{key}")
+        return
+    if isinstance(value, (list, tuple)):
+        for index, item in enumerate(value):
+            ensure_json_domain(item, f"{path}[{index}]")
+        return
+    raise ValueError(f"{path} has unsupported type {type(value).__name__}")
 
 
 @dataclass(frozen=True)
@@ -102,19 +137,39 @@ class BackendEvidence:
             raise ValueError(
                 "backend evidence confidence must be atomic and cannot set final consensus status"
             )
+        ensure_json_domain(self.value, "evidence.value")
+        ensure_json_domain(self.provenance, "evidence.provenance")
+        if self.address is not None and (
+            not isinstance(self.address, int) or isinstance(self.address, bool)
+        ):
+            raise TypeError("evidence.address must be an integer or None")
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> BackendEvidence:
+        if not isinstance(raw, dict):
+            raise TypeError("backend evidence entry must be an object")
+        address = raw.get("address")
+        if address is not None and (
+            not isinstance(address, int) or isinstance(address, bool)
+        ):
+            raise TypeError("backend evidence address must be an integer or null")
+        provenance = dict(raw.get("provenance", {}))
+        source_class = provenance.get("source_class", "static")
+        if source_class not in BACKEND_SOURCE_CLASSES:
+            raise ValueError(
+                "backend evidence may not declare source_class "
+                f"{source_class!r}; runtime evidence is collected by OrbisProbe itself"
+            )
         return cls(
             kind=str(raw["kind"]),
             subject=str(raw["subject"]),
             value=raw.get("value"),
-            address=raw.get("address"),
+            address=address,
             confidence=str(raw.get("confidence", "SUPPORTED")),
-            provenance=dict(raw.get("provenance", {})),
+            provenance=provenance,
         )
 
 

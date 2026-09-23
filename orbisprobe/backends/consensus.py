@@ -5,7 +5,17 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
-from .base import BackendEvidence, BackendResult, BackendStatus
+from .base import (
+    RUNTIME_SOURCE_CLASS,
+    BackendEvidence,
+    BackendResult,
+    BackendStatus,
+)
+
+#: Adapter identities allowed to contribute real-target runtime evidence. Runtime evidence must come
+#: from OrbisProbe's own runtime-collection channel; a claim of ``runtime_real`` from any other
+#: adapter identity is ignored rather than promoted.
+RUNTIME_CHANNELS = frozenset({"runtime-log", "runtime"})
 
 
 class ConsensusClassification(str, Enum):
@@ -18,8 +28,18 @@ class ConsensusClassification(str, Enum):
     REVIDIERT = "REVIDIERT"
 
 
-def _canonical(value: Any) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
+def _canonical(value: Any) -> str | None:
+    """Canonicalise a claim value, returning ``None`` when it is not strict-JSON representable.
+
+    Non-representable values must never raise here: a single malformed backend value would abort
+    the entire consensus step and discard the results of every other engine. They also must never
+    vote, so they are excluded instead.
+    """
+
+    try:
+        return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    except (TypeError, ValueError):
+        return None
 
 
 @dataclass
@@ -55,11 +75,13 @@ class ConsensusClaim:
 class ConsensusReport:
     claims: list[ConsensusClaim]
     backend_statuses: dict[str, str]
+    excluded_evidence: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "claims": [claim.to_dict() for claim in self.claims],
             "backend_statuses": self.backend_statuses,
+            "excluded_evidence": self.excluded_evidence,
             "has_conflicts": any(
                 claim.classification is ConsensusClassification.EVIDENCE_CONFLICT
                 for claim in self.claims
@@ -84,6 +106,15 @@ class ConsensusEngine:
             "provenance": evidence.provenance,
         }
 
+    @staticmethod
+    def _is_runtime_channel(result: BackendResult, evidence: BackendEvidence) -> bool:
+        """Runtime evidence counts only from OrbisProbe's own runtime-collection adapters."""
+
+        return (
+            evidence.provenance.get("source_class") == RUNTIME_SOURCE_CLASS
+            and result.identity.name in RUNTIME_CHANNELS
+        )
+
     def combine(
         self,
         results: list[BackendResult],
@@ -91,17 +122,33 @@ class ConsensusEngine:
     ) -> ConsensusReport:
         groups: dict[tuple[str, str], list[tuple[BackendResult, BackendEvidence]]] = {}
         statuses = {result.identity.name: result.status.value for result in results}
+        excluded: list[str] = []
         for result in results:
             if result.status is not BackendStatus.COMPLETED:
                 continue
             for evidence in result.evidence:
+                if _canonical(evidence.value) is None:
+                    excluded.append(
+                        f"{result.identity.name}:{evidence.kind}:{evidence.subject} "
+                        "(value not strict-JSON representable; excluded from voting)"
+                    )
+                    continue
                 groups.setdefault((evidence.kind, evidence.subject), []).append((result, evidence))
 
         claims: list[ConsensusClaim] = []
         for (kind, subject), entries in sorted(groups.items()):
             by_value: dict[str, list[tuple[BackendResult, BackendEvidence]]] = {}
             for result, evidence in entries:
-                by_value.setdefault(_canonical(evidence.value), []).append((result, evidence))
+                canonical = _canonical(evidence.value)
+                if canonical is None:
+                    excluded.append(
+                        f"{result.identity.name}:{evidence.kind}:{evidence.subject} "
+                        "(value not strict-JSON representable; excluded from voting)"
+                    )
+                    continue
+                by_value.setdefault(canonical, []).append((result, evidence))
+            if not by_value:
+                continue
             sources = [self._source(result, evidence) for result, evidence in entries]
             if len(by_value) > 1:
                 conflicts = [
@@ -170,16 +217,16 @@ class ConsensusEngine:
                     )
                 )
                 continue
-            source_classes = {
-                evidence.provenance.get("source_class", "static")
-                for _result, evidence in value_entries
+            runtime_flags = {
+                self._is_runtime_channel(result, evidence)
+                for result, evidence in value_entries
             }
-            has_real_runtime = "runtime_real" in source_classes
-            has_non_runtime_family = any(
-                evidence.provenance.get("source_class", "static") != "runtime_real"
-                for _result, evidence in value_entries
+            declares_untrusted_runtime = any(
+                evidence.provenance.get("source_class") == RUNTIME_SOURCE_CLASS
+                and not self._is_runtime_channel(result, evidence)
+                for result, evidence in value_entries
             )
-            if has_real_runtime and has_non_runtime_family and len(families) >= 2:
+            if any(runtime_flags) and len(runtime_flags) > 1 and len(families) >= 2:
                 classification = ConsensusClassification.CONFIRMED
             elif len(families) >= 2:
                 classification = ConsensusClassification.STRONGLY_SUPPORTED
@@ -187,6 +234,10 @@ class ConsensusEngine:
                 classification = ConsensusClassification.SUPPORTED
 
             unknowns: list[str] = []
+            if declares_untrusted_runtime:
+                unknowns.append(
+                    "runtime evidence from a non-runtime adapter was ignored for promotion"
+                )
             register_subject = subject.split("@", 1)[0].lower()
             if (
                 self.register_cross_check_required
@@ -209,4 +260,4 @@ class ConsensusEngine:
                     unknowns=unknowns,
                 )
             )
-        return ConsensusReport(claims=claims, backend_statuses=statuses)
+        return ConsensusReport(claims=claims, backend_statuses=statuses, excluded_evidence=excluded)

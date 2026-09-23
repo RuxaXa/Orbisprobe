@@ -7,7 +7,7 @@ from typing import Any
 
 from orbisprobe import __version__
 
-from .base import BackendResult, BackendStatus, ResourceLimits
+from .base import BackendIdentity, BackendResult, BackendStatus, ResourceLimits
 from .cache import AnalysisCache, CacheRequest
 from .consensus import ConsensusEngine, ConsensusReport
 from .registry import BackendRegistry
@@ -73,14 +73,45 @@ class BackendOrchestrator:
         cache_hits: list[str] = []
         available_families: set[str] = set()
         for name in backends:
+            try:
+                result = self._run_one(
+                    name, operation, request, binary_hash, available_families, cache_hits
+                )
+            except Exception as exc:  # noqa: BLE001 - a broken adapter must never abort the run
+                result = BackendResult(
+                    identity=BackendIdentity(
+                        name=name,
+                        version="unknown",
+                        independence_family=f"unresolved-{name}",
+                        capabilities=frozenset(),
+                    ),
+                    status=BackendStatus.ERROR,
+                    data={"analysis_mode": "PARTIAL_ANALYSIS", "effective_capabilities": []},
+                    errors=[f"backend setup raised {type(exc).__name__}: {exc}"],
+                    partial=True,
+                )
+            results.append(result)
+        consensus = self.consensus_engine.combine(results, available_families=available_families)
+        return MultiBackendReport(operation, results, consensus, cache_hits)
+
+    def _run_one(
+        self,
+        name: str,
+        operation: str,
+        request: dict[str, Any],
+        binary_hash: str,
+        available_families: set[str],
+        cache_hits: list[str],
+    ) -> BackendResult:
+        """Run a single backend. Every failure mode is returned, never raised."""
+
+        try:
             backend = self.registry.create(name, self.limits)
             if backend is None:
-                results.append(self.registry.status(name, self.limits))
-                continue
+                return self.registry.status(name, self.limits)
             availability = self.registry.status(name, self.limits)
             if availability.status is not BackendStatus.COMPLETED:
-                results.append(availability)
-                continue
+                return availability
             available_families.add(backend.identity.independence_family)
             parameters = {key: value for key, value in request.items() if key != "binary"}
             cache_request = CacheRequest(
@@ -91,24 +122,47 @@ class BackendOrchestrator:
                 base_address=int(request.get("base", 0)),
                 operation=operation,
                 parameters=parameters,
+                resource_limits=self.limits.to_dict(),
                 backend_fingerprint=backend.cache_fingerprint(),
             )
             cached = self.cache.load(cache_request)
             if cached is not None:
-                results.append(cached)
                 cache_hits.append(name)
-                continue
+                return cached
             method = getattr(backend, operation)
-            result = method(request)
-            results.append(result)
+            try:
+                result = method(request)
+            except Exception as exc:  # noqa: BLE001 - a crashing backend must never abort the run
+                result = BackendResult(
+                    identity=backend.identity,
+                    status=BackendStatus.ERROR,
+                    data={"analysis_mode": "PARTIAL_ANALYSIS", "effective_capabilities": []},
+                    errors=[f"backend raised {type(exc).__name__}: {exc}"],
+                    partial=True,
+                )
             if result.status in {
                 BackendStatus.COMPLETED,
                 BackendStatus.PARTIAL,
                 BackendStatus.ANALYSIS_INCOMPLETE,
             }:
-                self.cache.store(cache_request, result)
-        consensus = self.consensus_engine.combine(results, available_families=available_families)
-        return MultiBackendReport(operation, results, consensus, cache_hits)
+                try:
+                    self.cache.store(cache_request, result)
+                except (OSError, TypeError, ValueError):
+                    pass
+            return result
+        except (KeyError, TypeError, ValueError, OSError, RuntimeError) as exc:
+            return BackendResult(
+                identity=BackendIdentity(
+                    name=name,
+                    version="unknown",
+                    independence_family=f"unresolved-{name}",
+                    capabilities=frozenset(),
+                ),
+                status=BackendStatus.ERROR,
+                data={"analysis_mode": "PARTIAL_ANALYSIS", "effective_capabilities": []},
+                errors=[f"backend setup failed: {type(exc).__name__}: {exc}"],
+                partial=True,
+            )
 
 
 def default_registry() -> BackendRegistry:

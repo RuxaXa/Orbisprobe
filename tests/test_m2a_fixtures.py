@@ -4,12 +4,14 @@ from pathlib import Path
 
 import pytest
 
+from orbisprobe.analysis.binary import BinaryImage
 from orbisprobe.analysis.memop import analyze_memop_facts
 from orbisprobe.backends.angr_backend import AngrBackend
 from orbisprobe.backends.base import BackendStatus, ResourceLimits
 from orbisprobe.backends.consensus import ConsensusClassification, ConsensusEngine
 from orbisprobe.backends.ghidra_backend import GhidraBackend
 from orbisprobe.backends.native_backend import NativeBackend
+from orbisprobe.surfaces.svm import scan_svm
 
 ROOT = Path(__file__).parent / "fixtures" / "m2a"
 ANGR_PYTHON = Path(
@@ -150,3 +152,15 @@ def test_tag_0xf_snapshot_fixture_has_required_native_constants(tmp_path: Path):
     assert "0xf" in text
     assert "0x400" in text
     assert "[rdi + 0x18]" in text
+
+
+def test_stale_eax_and_edx_do_not_prove_svm_initialization(tmp_path: Path):
+    for fixture in flow_fixtures():
+        if fixture["id"] not in {"stale-eax", "stale-edx"}:
+            continue
+        path = write_fixture(tmp_path, fixture)
+        result = scan_svm(
+            BinaryImage.open(path, architecture="x86_64", base=fixture["base"])
+        )
+        assert result.classification == fixture["expected_native_classification"]
+        assert "EFER.SVME initialization sequence" in result.surfaces[0].unknowns

@@ -18,6 +18,7 @@ from .base import (
     BackendResult,
     BackendStatus,
     ResourceLimits,
+    ensure_json_domain,
 )
 
 CAPABILITIES = frozenset(
@@ -118,6 +119,64 @@ class GhidraBackend(AnalysisBackend):
         return value
 
     @staticmethod
+    def _validate_output(raw: Any) -> dict[str, Any]:
+        if not isinstance(raw, dict):
+            raise TypeError("Ghidra response must be a JSON object")
+        if raw.get("schema") != "orbisprobe-ghidra-pcode-v1":
+            raise ValueError("unsupported or missing Ghidra response schema")
+        if not isinstance(raw.get("partial"), bool):
+            raise TypeError("Ghidra response partial must be boolean")
+        function = raw.get("function")
+        if (
+            not isinstance(function, dict)
+            or not isinstance(function.get("entry"), int)
+            or isinstance(function.get("entry"), bool)
+        ):
+            raise TypeError("Ghidra response function entry must be an integer")
+        for key in (
+            "instructions",
+            "pcode",
+            "definitions",
+            "consumers",
+            "memory_accesses",
+            "calls",
+            "blocks",
+            "xrefs",
+            "parameters",
+            "stack_variables",
+        ):
+            if not isinstance(raw.get(key), list):
+                raise TypeError(f"Ghidra response {key} must be a list")
+            for item in raw[key]:
+                if not isinstance(item, dict):
+                    raise TypeError(f"Ghidra {key} entries must be objects")
+                address = item.get("address")
+                if address is not None and (
+                    not isinstance(address, int) or isinstance(address, bool)
+                ):
+                    raise TypeError(f"Ghidra {key} entries must carry integer or null addresses")
+        for item in raw["pcode"]:
+            if not isinstance(item.get("opcode"), str):
+                raise TypeError("Ghidra P-code entries must carry a string opcode")
+        for item in raw["instructions"]:
+            if not isinstance(item.get("mnemonic"), str):
+                raise TypeError("Ghidra instructions must carry a string mnemonic")
+            if not isinstance(item.get("address"), int) or isinstance(
+                item.get("address"), bool
+            ):
+                raise TypeError("Ghidra instructions must carry an integer address")
+        ensure_json_domain(raw, "ghidra.response")
+        return raw
+
+    @staticmethod
+    def _pcode_subject(item: dict[str, Any]) -> str:
+        opcode = item.get("opcode")
+        address = item.get("address")
+        if isinstance(address, int) and not isinstance(address, bool):
+            return f"{opcode}@0x{address:x}"
+        return f"{opcode}@unknown"
+
+    @staticmethod
     def _validate_request(request: dict[str, Any]) -> dict[str, Any]:
         clean = dict(request)
         binary = Path(clean["binary"]).expanduser().resolve()
@@ -131,6 +190,28 @@ class GhidraBackend(AnalysisBackend):
             if key not in clean or not isinstance(clean[key], int) or isinstance(clean[key], bool) or clean[key] < 0:
                 raise ValueError(f"{key} must be a non-negative integer")
         return clean
+
+    @staticmethod
+    def _effective_capabilities(raw: dict[str, Any]) -> list[str]:
+        capabilities = {BackendCapability.HEADLESS}
+        if raw.get("function") and raw.get("instructions"):
+            capabilities.add(BackendCapability.CFG)
+        if raw.get("pcode"):
+            capabilities.add(BackendCapability.DATAFLOW)
+        if "calls" in raw:
+            capabilities.add(BackendCapability.CALLGRAPH)
+        if "memory_accesses" in raw:
+            capabilities.add(BackendCapability.MEMORY_MODEL)
+        if raw.get("decompiler_c"):
+            capabilities.add(BackendCapability.DECOMPILER)
+        return sorted(item.value for item in capabilities)
+
+    @staticmethod
+    def _analysis_metadata(data: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "analysis_mode": data.get("analysis_mode", "PARTIAL_ANALYSIS"),
+            "effective_capabilities": list(data.get("effective_capabilities", [])),
+        }
 
     def _run_process(self, command: list[str], environment: dict[str, str]) -> subprocess.CompletedProcess[str]:
         process = subprocess.Popen(
@@ -158,7 +239,13 @@ class GhidraBackend(AnalysisBackend):
         try:
             clean = self._validate_request(request)
         except (OSError, ValueError, TypeError, KeyError) as exc:
-            return BackendResult(identity, BackendStatus.ERROR, errors=[f"invalid request: {exc}"])
+            return BackendResult(
+                identity,
+                BackendStatus.ERROR,
+                data={"analysis_mode": "PARTIAL_ANALYSIS", "effective_capabilities": []},
+                errors=[f"invalid request: {exc}"],
+                partial=True,
+            )
 
         started = time.monotonic()
         with tempfile.TemporaryDirectory(prefix="orbisprobe-ghidra-") as temporary:
@@ -207,6 +294,7 @@ class GhidraBackend(AnalysisBackend):
                 return BackendResult(
                     identity,
                     BackendStatus.TIMEOUT,
+                    data={"analysis_mode": "PARTIAL_ANALYSIS", "effective_capabilities": []},
                     errors=[f"Ghidra exceeded {self.limits.timeout_seconds}s timeout"],
                     partial=True,
                     metrics={"elapsed_seconds": round(time.monotonic() - started, 6)},
@@ -217,41 +305,69 @@ class GhidraBackend(AnalysisBackend):
                 return BackendResult(
                     identity,
                     BackendStatus.ERROR,
+                    data={"analysis_mode": "PARTIAL_ANALYSIS", "effective_capabilities": []},
                     errors=[f"Ghidra produced no JSON (exit {completed.returncode})"],
                     metrics={
                         "elapsed_seconds": round(time.monotonic() - started, 6),
                         "stdout": completed.stdout[-4000:],
                         "stderr": completed.stderr[-4000:],
                     },
+                    partial=True,
                 )
             if output.stat().st_size > 16 * 1024 * 1024:
                 return BackendResult(
                     identity,
                     BackendStatus.RESOURCE_LIMIT,
+                    data={"analysis_mode": "PARTIAL_ANALYSIS", "effective_capabilities": []},
                     errors=["Ghidra JSON exceeded 16 MiB"],
                     partial=True,
                     metrics={"elapsed_seconds": round(time.monotonic() - started, 6)},
                 )
             try:
-                raw = self._normalize(json.loads(output.read_text(encoding="utf-8")))
+                decoded = json.loads(output.read_text(encoding="utf-8"))
+                raw = self._validate_output(self._normalize(decoded))
             except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
                 return BackendResult(
                     identity,
                     BackendStatus.ERROR,
+                    data={"analysis_mode": "PARTIAL_ANALYSIS", "effective_capabilities": []},
                     errors=[f"invalid Ghidra JSON: {exc}"],
+                    partial=True,
                 )
-            partial = bool(raw.get("partial", False)) or completed.returncode != 0
-            status = BackendStatus.PARTIAL if partial else BackendStatus.COMPLETED
-            evidence = [
-                BackendEvidence(
-                    kind="pcode",
-                    subject=f"{item.get('opcode')}@0x{item.get('address', 0):x}",
-                    value=item.get("opcode"),
-                    address=item.get("address"),
-                    provenance={"source_class": "static", "engine": "ghidra-pcode"},
+            try:
+                partial = bool(raw.get("partial", False)) or completed.returncode != 0
+                status = BackendStatus.PARTIAL if partial else BackendStatus.COMPLETED
+                raw["analysis_mode"] = (
+                    "PARTIAL_ANALYSIS"
+                    if partial
+                    else "BOUNDED_ANALYSIS"
+                    if bounded_noanalysis
+                    else "FULL_ANALYSIS"
                 )
-                for item in raw.get("pcode", [])[:256]
-            ]
+                raw["effective_capabilities"] = self._effective_capabilities(raw)
+                evidence = [
+                    BackendEvidence(
+                        kind="pcode",
+                        subject=self._pcode_subject(item),
+                        value=item.get("opcode"),
+                        address=item.get("address") if isinstance(item.get("address"), int) else None,
+                        provenance={
+                            "source_class": "static",
+                            "engine": "ghidra-pcode",
+                            "analysis_mode": raw["analysis_mode"],
+                        },
+                    )
+                    for item in raw.get("pcode", [])[:256]
+                ]
+            except (KeyError, TypeError, ValueError) as exc:
+                return BackendResult(
+                    identity,
+                    BackendStatus.ERROR,
+                    data={"analysis_mode": "PARTIAL_ANALYSIS", "effective_capabilities": []},
+                    errors=[f"Ghidra evidence construction failed: {type(exc).__name__}: {exc}"],
+                    partial=True,
+                    metrics={"elapsed_seconds": round(time.monotonic() - started, 6)},
+                )
             unknowns = []
             if partial:
                 unknowns.append("Ghidra export reached item or analysis limit")
@@ -274,40 +390,65 @@ class GhidraBackend(AnalysisBackend):
 
     def recover_cfg(self, request: dict[str, Any]) -> BackendResult:
         result = self._analyze(request)
-        result.data = {"function": result.data.get("function"), "blocks": result.data.get("blocks", []), "calls": result.data.get("calls", [])}
+        result.data = {
+            **self._analysis_metadata(result.data),
+            "function": result.data.get("function"),
+            "blocks": result.data.get("blocks", []),
+            "calls": result.data.get("calls", []),
+        }
         return result
 
     def trace_value(self, request: dict[str, Any]) -> BackendResult:
         result = self._analyze(request)
         result.status = BackendStatus.ANALYSIS_INCOMPLETE if result.status is BackendStatus.COMPLETED else result.status
+        result.partial = True
         result.unknowns.append("Ghidra raw p-code export does not yet close a value trace")
         return result
 
     def find_definitions(self, request: dict[str, Any]) -> BackendResult:
         result = self._analyze(request)
-        result.data = {"definitions": result.data.get("definitions", [])}
+        result.data = {
+            **self._analysis_metadata(result.data),
+            "definitions": result.data.get("definitions", []),
+        }
         return result
 
     def find_consumers(self, request: dict[str, Any]) -> BackendResult:
         result = self._analyze(request)
-        result.data = {"consumers": result.data.get("consumers", [])}
+        result.data = {
+            **self._analysis_metadata(result.data),
+            "consumers": result.data.get("consumers", []),
+        }
         return result
 
     def resolve_call_arguments(self, request: dict[str, Any]) -> BackendResult:
         result = self._analyze(request)
         result.status = BackendStatus.ANALYSIS_INCOMPLETE if result.status is BackendStatus.COMPLETED else result.status
-        result.data = {"arguments": [], "calls": result.data.get("calls", [])}
+        result.partial = True
+        result.data = {
+            **self._analysis_metadata(result.data),
+            "arguments": [],
+            "calls": result.data.get("calls", []),
+        }
         result.unknowns.append("parameter recovery exported; call argument proof is incomplete")
         return result
 
     def evaluate_branch_constraints(self, request: dict[str, Any]) -> BackendResult:
         result = self._analyze(request)
         result.status = BackendStatus.ANALYSIS_INCOMPLETE if result.status is BackendStatus.COMPLETED else result.status
-        result.data = {"constraints": [], "blocks": result.data.get("blocks", [])}
+        result.partial = True
+        result.data = {
+            **self._analysis_metadata(result.data),
+            "constraints": [],
+            "blocks": result.data.get("blocks", []),
+        }
         result.unknowns.append("Ghidra static p-code does not solve symbolic branch constraints")
         return result
 
     def analyze_memory_access(self, request: dict[str, Any]) -> BackendResult:
         result = self._analyze(request)
-        result.data = {"memory_accesses": result.data.get("memory_accesses", [])}
+        result.data = {
+            **self._analysis_metadata(result.data),
+            "memory_accesses": result.data.get("memory_accesses", []),
+        }
         return result
