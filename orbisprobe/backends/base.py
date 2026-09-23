@@ -22,6 +22,14 @@ class BackendCapability(str, Enum):
     MEMORY_MODEL = "MEMORY_MODEL"
     DECOMPILER = "DECOMPILER"
     HEADLESS = "HEADLESS"
+    # M2-B dynamic-analysis capabilities
+    DYNAMIC_SYMBOLIC = "DYNAMIC_SYMBOLIC"
+    REGISTER_TRACE = "REGISTER_TRACE"
+    MEMORY_TRACE = "MEMORY_TRACE"
+    BRANCH_TRACE = "BRANCH_TRACE"
+    CALL_STUBS = "CALL_STUBS"
+    SNAPSHOT = "SNAPSHOT"
+    CONCRETE_EXECUTION = "CONCRETE_EXECUTION"
 
 
 class BackendStatus(str, Enum):
@@ -34,11 +42,31 @@ class BackendStatus(str, Enum):
     ERROR = "ERROR"
 
 
+#: Provenance classes, ordered from weakest to strongest evidence modality. A backend may only use
+#: the offline classes; real-target runtime evidence is collected by OrbisProbe itself.
+class EvidenceProvenance(str, Enum):
+    STATIC = "STATIC"
+    SYMBOLIC = "SYMBOLIC"
+    EMULATED = "EMULATED"
+    REAL_RUNTIME = "REAL_RUNTIME"
+
+
 #: Source classes a backend may attach to its own evidence. `runtime_real` is deliberately absent:
 #: it is reserved for OrbisProbe's own runtime-collection channel and can never be declared by
 #: external backend output.
-BACKEND_SOURCE_CLASSES = frozenset({"static", "symbolic", "inferred", "unattributed", "fixture"})
+BACKEND_SOURCE_CLASSES = frozenset(
+    {"static", "symbolic", "emulated", "inferred", "unattributed", "fixture"}
+)
 RUNTIME_SOURCE_CLASS = "runtime_real"
+SOURCE_CLASS_BY_PROVENANCE = {
+    EvidenceProvenance.STATIC: "static",
+    EvidenceProvenance.SYMBOLIC: "symbolic",
+    EvidenceProvenance.EMULATED: "emulated",
+    EvidenceProvenance.REAL_RUNTIME: RUNTIME_SOURCE_CLASS,
+}
+OFFLINE_PROVENANCE = frozenset(
+    {EvidenceProvenance.STATIC, EvidenceProvenance.SYMBOLIC, EvidenceProvenance.EMULATED}
+)
 
 
 def ensure_json_domain(value: Any, path: str = "value") -> None:
@@ -280,6 +308,27 @@ class AnalysisBackend(ABC):
 
     @abstractmethod
     def analyze_memory_access(self, request: dict[str, Any]) -> BackendResult: ...
+
+    def run_harness(self, request: dict[str, Any]) -> BackendResult:
+        """Execute a validated M2-B function harness.
+
+        Static-analysis backends do not implement this; the default is a structured
+        ``ANALYSIS_INCOMPLETE`` rather than an exception, so a mixed backend list still runs.
+        """
+
+        return BackendResult(
+            identity=self.identity,
+            status=BackendStatus.ANALYSIS_INCOMPLETE,
+            errors=[f"backend {self.identity.name} does not implement harness execution"],
+            partial=True,
+        )
+
+    def dynamic_evidence(
+        self, harness: Any, binary_sha256: str, result: BackendResult
+    ) -> Any | None:
+        """Return a :class:`~orbisprobe.backends.dynamic.DynamicEvidence` record, if supported."""
+
+        return None
 
     def export_evidence(self, result: BackendResult) -> str:
         return json.dumps(result.to_dict(), sort_keys=True, separators=(",", ":"))

@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.2.0.dev2 — M2-B1 dynamic function harness
+
+- Added a validated, hash-bound function-harness model and the bounded callee-stub registry
+  (`harness: m2b-harness-v1`).
+- Added a Triton 1.0.0rc4 dynamic backend in its own pinned environment and subprocess, with real
+  architectural `CALL`/`RET` semantics owned by Triton alone.
+- Added registered-stub calls that execute a real `CALL` and return via the emulated stack return
+  address, with normalized call/depth/RSP evidence.
+- Added fail-closed CALL/RET classification and verification codes.
+  Call target: `INVALID_CALL_TARGET` (a `CALL` whose target is not an instruction boundary).
+  Return target: `RETURN_TO_UNMAPPED`, `RETURN_TO_NON_EXECUTABLE`, `INVALID_RETURN_TARGET`.
+  Return mechanics: `CORRUPTED_STACK_RETURN`, `CALL_STACK_UNDERFLOW`, `EARLY_SENTINEL_RETURN`,
+  `UNSUPPORTED_RETURN_FORM`, plus the harness return `HARNESS_RETURN`.
+  CALL/RET control-flow verification: `CONTROL_FLOW_CONFLICT`.
+- Added compact dynamic evidence with hash-referenced traces and an offline-only provenance gate.
+- Added harness-aware cache keys binding binary, harness, input, stub-registry version, backend
+  version, OrbisProbe version, base address, operation, and resource limits.
+- Added the 14-case synthetic harness matrix (A–N) and the real-harness research runs for P2-1,
+  CASE-003, and the FW9 SVM slice.
+- Fixed: memory taint ranges are decomposed into naturally aligned Triton-legal chunks, so a
+  realistic 128-byte tainted region no longer crashes the worker.
+- Fixed: conditional-branch evidence records the executed decision (`taken`, `next_rip`,
+  `fallthrough`) instead of a constant `taken: true`.
+- Kept Qiling, AFL++, PANDA, S2E, Binary Ninja, and every live or persistent-state path out of this
+  checkpoint.
+
 ## 0.2.0.dev2 — M2-A multi-engine analysis
 
 - Added a capability-based backend API with structured availability, timeout, resource, partial, and error states.

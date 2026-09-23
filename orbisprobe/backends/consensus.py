@@ -17,11 +17,17 @@ from .base import (
 #: adapter identity is ignored rather than promoted.
 RUNTIME_CHANNELS = frozenset({"runtime-log", "runtime"})
 
+#: Provenance families used to decide whether a claim is corroborated across evidence modalities.
+STATIC_SOURCE_CLASSES = frozenset({"static", "inferred", "unattributed", "fixture"})
+SYMBOLIC_SOURCE_CLASSES = frozenset({"symbolic"})
+EMULATED_SOURCE_CLASSES = frozenset({"emulated"})
+
 
 class ConsensusClassification(str, Enum):
     UNKNOWN = "UNKNOWN"
     SUPPORTED = "SUPPORTED"
     STRONGLY_SUPPORTED = "STRONGLY_SUPPORTED"
+    MULTI_MODAL_STRONG_SUPPORT = "MULTI_MODAL_STRONG_SUPPORT"
     CONFIRMED = "CONFIRMED"
     EVIDENCE_CONFLICT = "EVIDENCE_CONFLICT"
     DISPROVED = "DISPROVED"
@@ -228,6 +234,21 @@ class ConsensusEngine:
             )
             if any(runtime_flags) and len(runtime_flags) > 1 and len(families) >= 2:
                 classification = ConsensusClassification.CONFIRMED
+            elif (
+                len(families) >= 2
+                and any(
+                    evidence.provenance.get("source_class") in EMULATED_SOURCE_CLASSES
+                    for _result, evidence in value_entries
+                )
+                and any(
+                    evidence.provenance.get("source_class")
+                    in (STATIC_SOURCE_CLASSES | SYMBOLIC_SOURCE_CLASSES)
+                    for _result, evidence in value_entries
+                )
+            ):
+                # Corroboration across an offline static/symbolic modality and an executed
+                # emulation modality. Still explicitly not real-target runtime confirmation.
+                classification = ConsensusClassification.MULTI_MODAL_STRONG_SUPPORT
             elif len(families) >= 2:
                 classification = ConsensusClassification.STRONGLY_SUPPORTED
             else:
