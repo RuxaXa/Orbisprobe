@@ -7,7 +7,7 @@ import stat
 import zipfile
 from pathlib import Path, PurePosixPath
 
-VERSION = "0.2.0-dev1"
+VERSION = "0.2.0-dev2"
 ARCHIVE_ROOT = f"orbisprobe-v{VERSION}"
 FIXED_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
 TOP_LEVEL_FILES = {
@@ -18,7 +18,7 @@ TOP_LEVEL_FILES = {
     "pyproject.toml",
 }
 SOURCE_SUFFIXES = {
-    "orbisprobe": {".py"},
+    "orbisprobe": {".py", ".java"},
     "tests": {".py", ".json"},
     "examples": {".json"},
     "scripts": {".py"},

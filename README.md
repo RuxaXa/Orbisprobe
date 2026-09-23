@@ -11,6 +11,19 @@ M1 adds offline-only scanners and a conservative x86-64 register-lifetime engine
 claim boundaries are documented in [`docs/M1-ARCHITECTURE.md`](docs/M1-ARCHITECTURE.md); verified
 milestone results are in [`docs/M1-REPORT.md`](docs/M1-REPORT.md).
 
+M2-A multi-engine development is documented in
+[`docs/M2A-BACKENDS.md`](docs/M2A-BACKENDS.md); its verified results and open limits are in
+[`docs/M2A-REPORT.md`](docs/M2A-REPORT.md). Native Capstone, angr, and Ghidra Headless/P-code
+share one backend/evidence/consensus contract; missing optional engines fail as
+`BACKEND_UNAVAILABLE` without stopping the others.
+
+```bash
+orbisprobe backends --json
+orbisprobe analyze-dataflow kernel.bin --backend angr --base 0x... --function 0x...
+orbisprobe prove-path kernel.bin --backend angr --base 0x... --function 0x... --from 0x... --to 0x...
+orbisprobe privilege-surface iommu kernel.bin --backend auto --base 0x... --json
+```
+
 ```bash
 orbisprobe privilege-surface svm kernel.bin --base 0xffffffffd9918000
 orbisprobe privilege-surface iommu kernel.bin --base 0xffffffffd9918000

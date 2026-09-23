@@ -4,10 +4,20 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "orbisprobe"
-version = "0.2.0.dev1"
+version = "0.2.0.dev2"
 description = "Evidence-driven PS4/Orbis security research harness"
 requires-python = ">=3.11"
 dependencies = ["capstone==5.0.9"]
+
+[project.optional-dependencies]
+angr = ["angr==9.2.184", "pycparser==2.22"]
+
+[tool.setuptools.package-data]
+"orbisprobe.backends" = ["ghidra_scripts/*.java"]
+
+[tool.setuptools.packages.find]
+include = ["orbisprobe*"]
+exclude = ["tests*", "evidence*", "docs*", "examples*", "scripts*"]
 
 [project.scripts]
 orbisprobe = "orbisprobe.cli:main"

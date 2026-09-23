@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.0.dev2 — M2-A multi-engine analysis
+
+- Added a capability-based backend API with structured availability, timeout, resource, partial, and error states.
+- Added a SHA-256/version/base/parameter-bound analysis cache.
+- Added Native Capstone, isolated angr 9.2.184, and Ghidra 12.1.3 Headless/P-code backends.
+- Added bounded angr CFGFast, ReachingDefinitions, dependency, symbolic-domain, and path-constraint analysis.
+- Added Ghidra function, call, xref, P-code, memory, parameter, stack, and decompiler export.
+- Added independence-aware consensus and `EVIDENCE_CONFLICT` handling.
+- Added `backends`, `analyze-dataflow`, `prove-path`, and `privilege-surface --backend` CLI integration.
+- Added shared P2-1, CASE-003, overwrite, dead-slot, getter, Tag-0xF, memop, and synthetic dataflow fixtures.
+- Kept Binary Ninja optional/unavailable and deferred Triton, Qiling, AFL++, PANDA, and S2E.
+
 ## 0.2.0.dev1 — M1
 
 - Added the common privilege-surface model, evidence statuses, deterministic IDs, and P1–P4 triage.

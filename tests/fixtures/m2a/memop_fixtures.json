@@ -1,0 +1,52 @@
+{
+  "fixtures": [
+    {
+      "id": "safe-memcpy",
+      "operation": "memcpy",
+      "length_values": [32],
+      "index_domain": [0],
+      "destination_slot_size": 64,
+      "destination_slot_count": 1,
+      "length_type_bits": 32,
+      "length_signed": false,
+      "length_mutable": false,
+      "expected": "SAFE-INVARIANT"
+    },
+    {
+      "id": "real-stack-overflow",
+      "operation": "memcpy",
+      "length_values": [80],
+      "index_domain": [0],
+      "destination_slot_size": 32,
+      "destination_slot_count": 1,
+      "length_type_bits": 32,
+      "length_signed": false,
+      "length_mutable": false,
+      "expected": "OOB-WRITE-CANDIDATE"
+    },
+    {
+      "id": "index-oob",
+      "operation": "memcpy",
+      "length_values": [16],
+      "index_domain": [0, 1, 2],
+      "destination_slot_size": 32,
+      "destination_slot_count": 2,
+      "length_type_bits": 32,
+      "length_signed": false,
+      "length_mutable": false,
+      "expected": "INDEX-CANDIDATE"
+    },
+    {
+      "id": "stale-validation",
+      "operation": "memcpy",
+      "length_values": [16, 96],
+      "index_domain": [0],
+      "destination_slot_size": 32,
+      "destination_slot_count": 1,
+      "length_type_bits": 32,
+      "length_signed": false,
+      "length_mutable": true,
+      "expected": "UNKNOWN"
+    }
+  ]
+}
