@@ -431,33 +431,55 @@ static void cmd_kread_user(const char *line, uint64_t buf, uint64_t buflen) {
 
 /* ---- LIVE2: bounded split-view writer + double-read consumer -------------- */
 
-#define RACE_MAX_ITERS 100000u
-#define RACE_MAX_MS 5000u
+#define RACE_MAX_TRANS 100000u
+#define RACE_MAX_MS 100u
+#define RACE_RING 256u
 
 static volatile int g_race_run = 0;
+static volatile int g_race_ready = 0;
+static volatile int g_race_done = 0;
 static volatile uint64_t g_race_count = 0;
 static volatile uint64_t g_race_t_first = 0;
 static volatile uint64_t g_race_t_last = 0;
 static volatile int g_race_alternate = 1;
+static volatile int g_race_mode = 0;
 static uint64_t g_race_base = 0, g_race_off = 0, g_race_val_a = 0, g_race_val_b = 0;
-static uint64_t g_race_iters = 0, g_race_ms = 0;
+static uint64_t g_race_max_trans = 0, g_race_max_ms = 0;
+/* per-transition ring: id | timestamp_us | old | new (most recent RACE_RING transitions) */
+static volatile uint64_t g_ring_id[RACE_RING], g_ring_ts[RACE_RING];
+static volatile uint64_t g_ring_old[RACE_RING], g_ring_new[RACE_RING];
+static volatile uint64_t g_ring_head = 0, g_ring_total = 0;
+static ScePthread g_race_thread = 0;
 
-/* Toggle the shared field between exactly two valid values, bounded in iterations and runtime. */
+/* Event/time-driven toggle engine: stops on request_done (g_race_run=0), max transitions or
+   max writer runtime -- all three limits are hard. Records every transition with a timestamp. */
 static void *race_writer(void *arg) {
   UNUSED(arg);
   uint64_t t0 = sceKernelGetProcessTime();
   uint64_t value = g_race_val_b;
+  g_race_ready = 1;
   while (g_race_run) {
     value = (g_race_alternate && value == g_race_val_b) ? g_race_val_a : g_race_val_b;
     *(volatile uint64_t *)(g_race_base + g_race_off) = value;
-    g_race_count++;
     uint64_t now = sceKernelGetProcessTime();
-    if (g_race_count == 1) g_race_t_first = now;
+    uint64_t id = g_race_count + 1;
+    uint64_t slot = g_ring_head % RACE_RING;
+    g_ring_id[slot] = id;
+    g_ring_ts[slot] = now;
+    g_ring_old[slot] = (value == g_race_val_a) ? g_race_val_b : g_race_val_a;
+    g_ring_new[slot] = value;
+    g_ring_head = id;
+    g_ring_total = id;
+    g_race_count = id;
+    if (id == 1) g_race_t_first = now;
     g_race_t_last = now;
-    if (g_race_count >= g_race_iters) break;
-    if ((now - t0) / 1000ull >= g_race_ms) break;
+    if (id >= g_race_max_trans) break;
+    if ((now - t0) / 1000ull >= g_race_max_ms) break;
+    if (g_race_mode == 1) scePthreadYield();
+    else if (g_race_mode == 2) sceKernelUsleep(200);
   }
   g_race_run = 0;
+  g_race_done = 1;
   return 0;
 }
 
@@ -493,13 +515,16 @@ static void cmd_race(const char *line) {
     send_frame("ERR RACE code=6 msg=bad_b");
     return;
   }
-  g_race_iters = 1000;
-  g_race_ms = 200;
+  g_race_max_trans = 100000;
+  g_race_max_ms = 50;
+  g_race_mode = 0;
   g_race_alternate = 1;
-  if (key_value(line, "iters", hexbuf, sizeof(hexbuf))) g_race_iters = parse_hex_u64(hexbuf, &ok);
-  if (key_value(line, "ms", hexbuf, sizeof(hexbuf))) g_race_ms = parse_hex_u64(hexbuf, &ok);
+  if (key_value(line, "max_trans", hexbuf, sizeof(hexbuf))) g_race_max_trans = parse_hex_u64(hexbuf, &ok);
+  if (key_value(line, "ms", hexbuf, sizeof(hexbuf))) g_race_max_ms = parse_hex_u64(hexbuf, &ok);
+  if (key_value(line, "mode", hexbuf, sizeof(hexbuf))) g_race_mode = (int)parse_hex_u64(hexbuf, &ok);
   if (key_value(line, "alt", hexbuf, sizeof(hexbuf))) g_race_alternate = (int)parse_hex_u64(hexbuf, &ok);
-  if (g_race_iters == 0 || g_race_iters > RACE_MAX_ITERS || g_race_ms > RACE_MAX_MS) {
+  if (g_race_max_trans == 0 || g_race_max_trans > RACE_MAX_TRANS ||
+      g_race_max_ms == 0 || g_race_max_ms > RACE_MAX_MS || g_race_mode > 2) {
     send_frame("ERR RACE code=7 msg=bounds");
     return;
   }
@@ -507,18 +532,23 @@ static void cmd_race(const char *line) {
   g_race_count = 0;
   g_race_t_first = 0;
   g_race_t_last = 0;
+  g_ring_head = 0;
+  g_ring_total = 0;
+  g_race_ready = 0;
+  g_race_done = 0;
   g_race_run = 1;
-  ScePthread thread;
-  if (scePthreadCreate(&thread, 0, race_writer, 0, "live2race") != 0) {
+  if (scePthreadCreate(&g_race_thread, 0, race_writer, 0, "live2race") != 0) {
     g_race_run = 0;
     send_frame("ERR RACE code=8 msg=thread_create_failed");
     return;
   }
-  scePthreadDetach(thread);
-  char msg[160];
-  sprintf(msg, "OK RACE started base=0x%llx off=0x%llx alt=%d iters=0x%llx ms=0x%llx",
-          (unsigned long long)base, (unsigned long long)g_race_off, g_race_alternate,
-          (unsigned long long)g_race_iters, (unsigned long long)g_race_ms);
+  /* handshake: do not report started before the writer thread is live (bounded wait, 100 ms) */
+  uint64_t hs = sceKernelGetProcessTime();
+  while (!g_race_ready && (sceKernelGetProcessTime() - hs) < 100000ull) sceKernelUsleep(100);
+  char msg[200];
+  sprintf(msg, "OK RACE started ready=%d base=0x%llx off=0x%llx alt=%d mode=%d max_trans=0x%llx max_ms=0x%llx",
+          g_race_ready, (unsigned long long)base, (unsigned long long)g_race_off, g_race_alternate,
+          g_race_mode, (unsigned long long)g_race_max_trans, (unsigned long long)g_race_max_ms);
   send_frame(msg);
 }
 
@@ -551,13 +581,138 @@ static void cmd_dr(const char *line) {
   send_frame(msg);
 }
 
-static void cmd_rstop(void) {
+/* LIVE2.1: the whole event sequence inside ONE payload operation -- writer_ready → request_start →
+   phase-1 read → intervening kernel call → phase-2 read → request_done → writer stop. No network
+   round trip between the writer start and the reads, so the writer is provably live in the window. */
+static void cmd_drw(const char *line) {
+  uint64_t base = 0, size = 0;
+  int ok = 0;
+  char raw[40];
+  select_buffer(line, &base, &size);
+  if (g_race_run) {
+    send_frame("ERR DRW code=1 msg=busy");
+    return;
+  }
+  if (!key_value(line, "off", raw, sizeof(raw))) {
+    send_frame("ERR DRW code=2 msg=missing_off");
+    return;
+  }
+  uint64_t off = parse_hex_u64(raw, &ok);
+  if (!ok || off + 8 > size) {
+    send_frame("ERR DRW code=3 msg=off_out_of_range");
+    return;
+  }
+  if (!key_value(line, "a", raw, sizeof(raw))) {
+    send_frame("ERR DRW code=4 msg=missing_a");
+    return;
+  }
+  uint64_t va = parse_hex_u64(raw, &ok);
+  if (!ok || !key_value(line, "b", raw, sizeof(raw))) {
+    send_frame("ERR DRW code=5 msg=missing_b");
+    return;
+  }
+  uint64_t vb = parse_hex_u64(raw, &ok);
+  if (!ok) {
+    send_frame("ERR DRW code=6 msg=bad_b");
+    return;
+  }
+  g_race_max_ms = 50;
+  g_race_max_trans = 100000;
+  g_race_mode = 0;
+  g_race_alternate = 1;
+  if (key_value(line, "ms", raw, sizeof(raw))) g_race_max_ms = parse_hex_u64(raw, &ok);
+  if (key_value(line, "mode", raw, sizeof(raw))) g_race_mode = (int)parse_hex_u64(raw, &ok);
+  if (key_value(line, "alt", raw, sizeof(raw))) g_race_alternate = (int)parse_hex_u64(raw, &ok);
+  if (g_race_max_ms == 0 || g_race_max_ms > RACE_MAX_MS || g_race_mode > 2) {
+    send_frame("ERR DRW code=7 msg=bounds");
+    return;
+  }
+  g_race_base = base;
+  g_race_off = off;
+  g_race_val_a = va;
+  g_race_val_b = vb;
+  g_race_count = 0;
+  g_ring_head = 0;
+  g_ring_total = 0;
+  g_race_t_first = 0;
+  g_race_t_last = 0;
+  g_race_ready = 0;
+  g_race_done = 0;
+  g_race_run = 1;
+  if (scePthreadCreate(&g_race_thread, 0, race_writer, 0, "live2race") != 0) {
+    g_race_run = 0;
+    send_frame("ERR DRW code=8 msg=thread_create_failed");
+    return;
+  }
+  uint64_t hs = sceKernelGetProcessTime();
+  while (!g_race_ready && (sceKernelGetProcessTime() - hs) < 100000ull) sceKernelUsleep(50);
+  uint64_t rst = sceKernelGetProcessTime();
+  static uint64_t drw_scratch[4];
+  uint64_t w1 = *(volatile uint64_t *)(base + off);
+  uint64_t other = (base == g_buf_a) ? g_buf_b : g_buf_a;
+  int rc = get_memory_dump(other, drw_scratch, 32);
+  uint64_t w2 = *(volatile uint64_t *)(base + off);
+  uint64_t rdone = sceKernelGetProcessTime();
   g_race_run = 0;
-  sceKernelUsleep(2000);
-  char msg[200];
-  sprintf(msg, "OK RSTOP transitions=%llu t_first=%llu t_last=%llu",
+  uint64_t waited = 0;
+  while (!g_race_done && waited < 200000ull) {
+    sceKernelUsleep(100);
+    waited += 100;
+  }
+  char msg[4096];
+  int mo = sprintf(msg, "OK DRW w1=0x%llx w2=0x%llx t1=%llu t2=%llu rst=%llu rdone=%llu ready=%d "
+                        "trans=%llu ring_total=%llu other_rc=%d off=0x%llx",
+                   (unsigned long long)w1, (unsigned long long)w2, (unsigned long long)rst,
+                   (unsigned long long)rdone, (unsigned long long)rst, (unsigned long long)rdone,
+                   g_race_ready, (unsigned long long)g_race_count, (unsigned long long)g_ring_total,
+                   rc, (unsigned long long)off);
+  uint64_t total = g_ring_total;
+  uint64_t avail = (total < RACE_RING) ? total : RACE_RING;
+  if (avail > 64) avail = 64;
+  mo += sprintf(msg + mo, " avail=%llu trace=", (unsigned long long)avail);
+  for (uint64_t i = 0; i < avail; i++) {
+    uint64_t slot = (g_ring_head - avail + i) % RACE_RING;
+    mo += sprintf(msg + mo, "%s%llu:%llu:%llx:%llx", (i == 0) ? "" : ",",
+                  (unsigned long long)g_ring_id[slot], (unsigned long long)g_ring_ts[slot],
+                  (unsigned long long)g_ring_old[slot], (unsigned long long)g_ring_new[slot]);
+  }
+  send_frame(msg);
+}
+
+static void cmd_rstop(void) {
+  uint64_t waited = 0;
+  g_race_run = 0;
+  while (!g_race_done && waited < 200000ull) {
+    sceKernelUsleep(200);
+    waited += 200;
+  }
+  char msg[250];
+  sprintf(msg, "OK RSTOP transitions=%llu t_first=%llu t_last=%llu writer_done=%d ring_total=%llu waited_us=%llu",
           (unsigned long long)g_race_count, (unsigned long long)g_race_t_first,
-          (unsigned long long)g_race_t_last);
+          (unsigned long long)g_race_t_last, g_race_done, (unsigned long long)g_ring_total,
+          (unsigned long long)waited);
+  send_frame(msg);
+}
+
+/* Dump the most recent ring entries so the host can count transitions inside its request window. */
+static void cmd_rtrace(const char *line) {
+  char raw[32];
+  int ok = 0;
+  uint64_t want = 64;
+  if (key_value(line, "n", raw, sizeof(raw))) want = parse_hex_u64(raw, &ok);
+  if (want == 0 || want > RACE_RING) want = RACE_RING;
+  uint64_t total = g_ring_total;
+  uint64_t avail = (total < RACE_RING) ? total : RACE_RING;
+  if (want > avail) want = avail;
+  char msg[4096];
+  int off = sprintf(msg, "OK RTRACE ring_total=%llu avail=%llu trace=", (unsigned long long)total,
+                    (unsigned long long)avail);
+  for (uint64_t i = 0; i < want; i++) {
+    uint64_t slot = (g_ring_head - want + i) % RACE_RING;
+    off += sprintf(msg + off, "%s%llu:%llu:%llx:%llx", (i == 0) ? "" : ",",
+                   (unsigned long long)g_ring_id[slot], (unsigned long long)g_ring_ts[slot],
+                   (unsigned long long)g_ring_old[slot], (unsigned long long)g_ring_new[slot]);
+  }
   send_frame(msg);
 }
 
@@ -687,10 +842,14 @@ int _main(struct thread *td) {
       cmd_kread_user(line, sb, ss);
     } else if (line[0] == 'R' && line[1] == 'A' && line[2] == 'C' && line[3] == 'E') {
       cmd_race(line);
+    } else if (line[0] == 'D' && line[1] == 'R' && line[2] == 'W') {
+      cmd_drw(line);
     } else if (line[0] == 'D' && line[1] == 'R') {
       cmd_dr(line);
     } else if (line[0] == 'R' && line[1] == 'S' && line[2] == 'T' && line[3] == 'O') {
       cmd_rstop();
+    } else if (line[0] == 'R' && line[1] == 'T' && line[2] == 'R' && line[3] == 'A') {
+      cmd_rtrace(line);
     } else if (line[0] == 'Q' && line[1] == 'U' && line[2] == 'I' && line[3] == 'T') {
       send_frame("OK BYE reason=quit");
       break;
