@@ -692,3 +692,373 @@ class ParkedCandidate:
 
     def to_json(self) -> str:
         return _json(self.to_dict())
+
+
+class DeviceOpenClassification(str, Enum):
+    """Evidence-backed classification of a device's open path."""
+
+    UNPRIVILEGED_USER = "UNPRIVILEGED_USER"
+    PRIVILEGED_USER = "PRIVILEGED_USER"
+    SYSTEM_PROCESS_ONLY = "SYSTEM_PROCESS_ONLY"
+    AUTHID_GATED = "AUTHID_GATED"
+    SESSION_GATED = "SESSION_GATED"
+    UNKNOWN = "UNKNOWN"
+
+
+def _require_optional_bool(name: str, value: bool | None) -> None:
+    if value is not None and not isinstance(value, bool):
+        raise TypeError(f"{name} must be a bool or None")
+
+
+def _require_string_tuple(
+    name: str,
+    entries: tuple[str, ...],
+    *,
+    nonempty: bool = False,
+) -> None:
+    if not isinstance(entries, tuple):
+        raise TypeError(f"{name} must be a tuple")
+    if nonempty and not entries:
+        raise ValueError(f"{name} must be non-empty")
+    if any(not isinstance(item, str) or not item.strip() for item in entries):
+        raise ValueError(f"{name} must contain non-empty strings")
+    if len(set(entries)) != len(entries):
+        raise ValueError(f"{name} must not contain duplicates")
+
+
+@dataclass(frozen=True)
+class DeviceOpenContract:
+    """Offline evidence describing who can reach a device open entrypoint."""
+
+    contract_id: str
+    device: str
+    entrypoint: str
+    user_reachable: bool | None
+    privilege_required: bool | None
+    confidence: Confidence
+    authid_gated: bool | None = None
+    session_gated: bool | None = None
+    evidence: tuple[str, ...] = ()
+    unresolved: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        _require_text("contract_id", self.contract_id)
+        _require_text("device", self.device)
+        _require_text("entrypoint", self.entrypoint)
+        _require_optional_bool("user_reachable", self.user_reachable)
+        _require_optional_bool("privilege_required", self.privilege_required)
+        _require_optional_bool("authid_gated", self.authid_gated)
+        _require_optional_bool("session_gated", self.session_gated)
+        if not isinstance(self.confidence, Confidence):
+            raise TypeError("confidence must be a Confidence")
+        _require_string_tuple("evidence", self.evidence)
+        _require_string_tuple("unresolved", self.unresolved)
+
+    @property
+    def classification(self) -> DeviceOpenClassification:
+        if (
+            self.user_reachable is None
+            or self.privilege_required is None
+            or self.authid_gated is None
+            or self.session_gated is None
+            or self.confidence is Confidence.NONE
+            or not self.evidence
+            or self.unresolved
+        ):
+            return DeviceOpenClassification.UNKNOWN
+        if not self.user_reachable:
+            return DeviceOpenClassification.SYSTEM_PROCESS_ONLY
+        if self.privilege_required:
+            return DeviceOpenClassification.PRIVILEGED_USER
+        if self.authid_gated:
+            return DeviceOpenClassification.AUTHID_GATED
+        if self.session_gated:
+            return DeviceOpenClassification.SESSION_GATED
+        return DeviceOpenClassification.UNPRIVILEGED_USER
+
+    @property
+    def complete(self) -> bool:
+        return self.classification is not DeviceOpenClassification.UNKNOWN
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "contract_id": self.contract_id,
+            "device": self.device,
+            "entrypoint": self.entrypoint,
+            "user_reachable": self.user_reachable,
+            "privilege_required": self.privilege_required,
+            "authid_gated": self.authid_gated,
+            "session_gated": self.session_gated,
+            "confidence": self.confidence.value,
+            "evidence": sorted(self.evidence),
+            "unresolved": sorted(self.unresolved),
+            "classification": self.classification.value,
+            "complete": self.complete,
+        }
+
+    def to_json(self) -> str:
+        return _json(self.to_dict())
+
+
+@dataclass(frozen=True)
+class CommandAuthorizationContract:
+    """Offline evidence for authorization checks on one device command."""
+
+    contract_id: str
+    device_open_contract_id: str
+    command_id: int
+    handler: str
+    requires_authorization: bool | None
+    authorization_checks: tuple[str, ...] = ()
+    confidence: Confidence = Confidence.NONE
+    evidence: tuple[str, ...] = ()
+    unresolved: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        _require_text("contract_id", self.contract_id)
+        _require_text("device_open_contract_id", self.device_open_contract_id)
+        _require_text("handler", self.handler)
+        if (
+            not isinstance(self.command_id, int)
+            or isinstance(self.command_id, bool)
+            or self.command_id < 0
+        ):
+            raise ValueError("command_id must be a non-negative integer")
+        _require_optional_bool("requires_authorization", self.requires_authorization)
+        _require_string_tuple("authorization_checks", self.authorization_checks)
+        _require_string_tuple("evidence", self.evidence)
+        _require_string_tuple("unresolved", self.unresolved)
+        if not isinstance(self.confidence, Confidence):
+            raise TypeError("confidence must be a Confidence")
+        if self.requires_authorization is True and not self.authorization_checks:
+            raise ValueError(
+                "authorization_checks are required when authorization is enforced"
+            )
+        if self.requires_authorization is not True and self.authorization_checks:
+            raise ValueError("authorization_checks require requires_authorization=True")
+
+    @property
+    def classification(self) -> str:
+        if (
+            self.requires_authorization is None
+            or self.confidence is Confidence.NONE
+            or not self.evidence
+            or self.unresolved
+        ):
+            return "unknown"
+        if self.requires_authorization:
+            return "authorization_enforced"
+        return "authorization_absent"
+
+    @property
+    def complete(self) -> bool:
+        return self.classification != "unknown"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "contract_id": self.contract_id,
+            "device_open_contract_id": self.device_open_contract_id,
+            "command_id": self.command_id,
+            "handler": self.handler,
+            "requires_authorization": self.requires_authorization,
+            "authorization_checks": sorted(self.authorization_checks),
+            "confidence": self.confidence.value,
+            "evidence": sorted(self.evidence),
+            "unresolved": sorted(self.unresolved),
+            "classification": self.classification,
+            "complete": self.complete,
+        }
+
+    def to_json(self) -> str:
+        return _json(self.to_dict())
+
+
+@dataclass(frozen=True)
+class FieldContract:
+    """Location, influence, and validation evidence for a structured field."""
+
+    field_id: str
+    offset: int
+    width: int
+    influence: UserInfluence
+    validators: tuple[str, ...] = ()
+    confidence: Confidence = Confidence.NONE
+    evidence: tuple[str, ...] = ()
+    unresolved: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        _require_text("field_id", self.field_id)
+        if (
+            not isinstance(self.offset, int)
+            or isinstance(self.offset, bool)
+            or self.offset < 0
+        ):
+            raise ValueError("offset must be a non-negative integer")
+        if (
+            not isinstance(self.width, int)
+            or isinstance(self.width, bool)
+            or self.width <= 0
+        ):
+            raise ValueError("width must be a positive integer")
+        if not isinstance(self.influence, UserInfluence):
+            raise TypeError("influence must be a UserInfluence")
+        if not isinstance(self.confidence, Confidence):
+            raise TypeError("confidence must be a Confidence")
+        _require_string_tuple("validators", self.validators)
+        _require_string_tuple("evidence", self.evidence)
+        _require_string_tuple("unresolved", self.unresolved)
+
+    @property
+    def complete(self) -> bool:
+        return (
+            self.influence is not UserInfluence.UNKNOWN
+            and self.confidence is not Confidence.NONE
+            and bool(self.evidence)
+            and not self.unresolved
+        )
+
+    @property
+    def validated(self) -> bool:
+        return self.complete and bool(self.validators)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "field_id": self.field_id,
+            "offset": self.offset,
+            "width": self.width,
+            "influence": self.influence.value,
+            "validators": sorted(self.validators),
+            "confidence": self.confidence.value,
+            "evidence": sorted(self.evidence),
+            "unresolved": sorted(self.unresolved),
+            "complete": self.complete,
+            "validated": self.validated,
+        }
+
+    def to_json(self) -> str:
+        return _json(self.to_dict())
+
+
+class SnapshotSemantics(str, Enum):
+    """How a consumer observes a field that may change across processors."""
+
+    SNAPSHOT_SAFE = "SNAPSHOT_SAFE"
+    REREAD_AFTER_VALIDATE = "REREAD_AFTER_VALIDATE"
+    MIXED = "MIXED"
+    UNKNOWN = "UNKNOWN"
+
+
+@dataclass(frozen=True)
+class CrossProcessorFieldContract:
+    """Evidence for a field transferred between distinct processors."""
+
+    contract_id: str
+    field: FieldContract
+    producer: str
+    consumer: str
+    snapshot_semantics: SnapshotSemantics
+    confidence: Confidence
+    evidence: tuple[str, ...] = ()
+    unresolved: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        _require_text("contract_id", self.contract_id)
+        if not isinstance(self.field, FieldContract):
+            raise TypeError("field must be a FieldContract")
+        _require_text("producer", self.producer)
+        _require_text("consumer", self.consumer)
+        if self.producer == self.consumer:
+            raise ValueError("producer and consumer must be distinct")
+        if not isinstance(self.snapshot_semantics, SnapshotSemantics):
+            raise TypeError("snapshot_semantics must be a SnapshotSemantics")
+        if not isinstance(self.confidence, Confidence):
+            raise TypeError("confidence must be a Confidence")
+        _require_string_tuple("evidence", self.evidence)
+        _require_string_tuple("unresolved", self.unresolved)
+
+    @property
+    def complete(self) -> bool:
+        return (
+            self.field.complete
+            and self.snapshot_semantics is not SnapshotSemantics.UNKNOWN
+            and self.confidence is not Confidence.NONE
+            and bool(self.evidence)
+            and not self.unresolved
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "contract_id": self.contract_id,
+            "field": self.field.to_dict(),
+            "producer": self.producer,
+            "consumer": self.consumer,
+            "snapshot_semantics": self.snapshot_semantics.value,
+            "confidence": self.confidence.value,
+            "evidence": sorted(self.evidence),
+            "unresolved": sorted(self.unresolved),
+            "complete": self.complete,
+        }
+
+    def to_json(self) -> str:
+        return _json(self.to_dict())
+
+
+@dataclass(frozen=True)
+class SessionBindingContract:
+    """Evidence tying command handling state to one device-open session."""
+
+    contract_id: str
+    device_open_contract_id: str
+    command_contract_ids: tuple[str, ...]
+    binding_fields: tuple[str, ...]
+    per_open_state: bool | None
+    confidence: Confidence
+    evidence: tuple[str, ...] = ()
+    unresolved: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        _require_text("contract_id", self.contract_id)
+        _require_text("device_open_contract_id", self.device_open_contract_id)
+        _require_string_tuple(
+            "command_contract_ids", self.command_contract_ids, nonempty=True
+        )
+        _require_string_tuple("binding_fields", self.binding_fields)
+        _require_optional_bool("per_open_state", self.per_open_state)
+        if not isinstance(self.confidence, Confidence):
+            raise TypeError("confidence must be a Confidence")
+        _require_string_tuple("evidence", self.evidence)
+        _require_string_tuple("unresolved", self.unresolved)
+        if self.per_open_state is True and not self.binding_fields:
+            raise ValueError("binding_fields are required for per-open state")
+        if self.per_open_state is not True and self.binding_fields:
+            raise ValueError("binding_fields require per_open_state=True")
+
+    @property
+    def complete(self) -> bool:
+        return (
+            self.per_open_state is not None
+            and self.confidence is not Confidence.NONE
+            and bool(self.evidence)
+            and not self.unresolved
+        )
+
+    @property
+    def bound(self) -> bool:
+        return self.complete and self.per_open_state is True
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "contract_id": self.contract_id,
+            "device_open_contract_id": self.device_open_contract_id,
+            "command_contract_ids": sorted(self.command_contract_ids),
+            "binding_fields": sorted(self.binding_fields),
+            "per_open_state": self.per_open_state,
+            "confidence": self.confidence.value,
+            "evidence": sorted(self.evidence),
+            "unresolved": sorted(self.unresolved),
+            "complete": self.complete,
+            "bound": self.bound,
+        }
+
+    def to_json(self) -> str:
+        return _json(self.to_dict())
