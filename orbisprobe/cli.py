@@ -14,6 +14,7 @@ from .backends.base import BackendStatus, ResourceLimits
 from .backends.cache import AnalysisCache
 from .backends.orchestrator import BackendOrchestrator, default_registry
 from .evidence import EvidenceLog
+from .leads.cli import add_leads_parser, run_leads_command
 from .policy import Policy
 from .report import markdown_report
 from .runner import ExitClassification, Runner
@@ -101,6 +102,7 @@ def _load_experiment(path: str) -> tuple[Experiment | None, str | None]:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="orbisprobe")
     sub = parser.add_subparsers(dest="cmd", required=True)
+    add_leads_parser(sub)
 
     command = sub.add_parser("validate")
     command.add_argument("experiment")
@@ -179,6 +181,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         command.add_argument("--max-steps", type=int, default=100000)
 
     args = parser.parse_args(argv)
+    if args.cmd == "leads":
+        return run_leads_command(args)
     if args.cmd == "validate":
         exp, error = _load_experiment(args.experiment)
         if error is not None or exp is None:
