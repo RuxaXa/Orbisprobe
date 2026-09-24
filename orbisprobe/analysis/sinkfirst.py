@@ -1062,3 +1062,115 @@ class SessionBindingContract:
 
     def to_json(self) -> str:
         return _json(self.to_dict())
+
+
+class RegisterSpaceClass(str, Enum):
+    CONTEXT = "CONTEXT"
+    UCONFIG = "UCONFIG"
+    CONFIG = "CONFIG"
+    PRIVILEGED = "PRIVILEGED"
+    UNKNOWN = "UNKNOWN"
+
+
+class ContextRestoreBehavior(str, Enum):
+    PER_CONTEXT_RESTORED = "PER_CONTEXT_RESTORED"
+    GLOBAL_PERSISTENT = "GLOBAL_PERSISTENT"
+    GLOBAL_UNTIL_OVERWRITTEN = "GLOBAL_UNTIL_OVERWRITTEN"
+    RESET_ON_SWITCH = "RESET_ON_SWITCH"
+    UNKNOWN = "UNKNOWN"
+
+
+@dataclass(frozen=True)
+class RegisterPolicyContract:
+    """Evidence-backed register-space, role, and context-lifetime contract."""
+
+    contract_id: str
+    register_index: int
+    register_name: str
+    register_role: str
+    space_class: RegisterSpaceClass
+    shadowed: bool | None
+    restore_behavior: ContextRestoreBehavior
+    register_name_confidence: Confidence = Confidence.NONE
+    register_role_confidence: Confidence = Confidence.NONE
+    globality_confidence: Confidence = Confidence.NONE
+    context_restore_confidence: Confidence = Confidence.NONE
+    evidence: tuple[str, ...] = ()
+    unresolved: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        _require_text("contract_id", self.contract_id)
+        _require_text("register_name", self.register_name)
+        _require_text("register_role", self.register_role)
+        if not isinstance(self.register_index, int) or isinstance(self.register_index, bool) or self.register_index < 0:
+            raise ValueError("register_index must be a non-negative integer")
+        if not isinstance(self.space_class, RegisterSpaceClass):
+            raise TypeError("space_class must be a RegisterSpaceClass")
+        _require_optional_bool("shadowed", self.shadowed)
+        if not isinstance(self.restore_behavior, ContextRestoreBehavior):
+            raise TypeError("restore_behavior must be a ContextRestoreBehavior")
+        for name, value in (("register_name_confidence", self.register_name_confidence), ("register_role_confidence", self.register_role_confidence), ("globality_confidence", self.globality_confidence), ("context_restore_confidence", self.context_restore_confidence)):
+            if not isinstance(value, Confidence):
+                raise TypeError(f"{name} must be a Confidence")
+        _require_string_tuple("evidence", self.evidence)
+        _require_string_tuple("unresolved", self.unresolved)
+
+    @property
+    def complete(self) -> bool:
+        return self.space_class is not RegisterSpaceClass.UNKNOWN and self.shadowed is not None and self.restore_behavior is not ContextRestoreBehavior.UNKNOWN and all(item is not Confidence.NONE for item in (self.register_name_confidence, self.register_role_confidence, self.globality_confidence, self.context_restore_confidence)) and bool(self.evidence) and not self.unresolved
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"contract_id": self.contract_id, "register_index": self.register_index, "register_name": self.register_name, "register_role": self.register_role, "space_class": self.space_class.value, "shadowed": self.shadowed, "restore_behavior": self.restore_behavior.value, "register_name_confidence": self.register_name_confidence.value, "register_role_confidence": self.register_role_confidence.value, "globality_confidence": self.globality_confidence.value, "context_restore_confidence": self.context_restore_confidence.value, "evidence": sorted(self.evidence), "unresolved": sorted(self.unresolved), "complete": self.complete}
+
+    def to_json(self) -> str:
+        return _json(self.to_dict())
+
+
+@dataclass(frozen=True)
+class CrossContextImpactContract:
+    """Whether a register write by one GPU context reaches another context."""
+
+    contract_id: str
+    register_policy: RegisterPolicyContract
+    writer_context: str
+    consumer_context: str
+    affected_scope: str
+    effects: tuple[str, ...]
+    crosses_contexts: bool | None
+    recovery: tuple[str, ...] = ()
+    confidence: Confidence = Confidence.NONE
+    evidence: tuple[str, ...] = ()
+    unresolved: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        _require_text("contract_id", self.contract_id)
+        if not isinstance(self.register_policy, RegisterPolicyContract):
+            raise TypeError("register_policy must be a RegisterPolicyContract")
+        _require_text("writer_context", self.writer_context)
+        _require_text("consumer_context", self.consumer_context)
+        _require_text("affected_scope", self.affected_scope)
+        if self.writer_context == self.consumer_context:
+            raise ValueError("writer_context and consumer_context must be distinct")
+        _require_string_tuple("effects", self.effects, nonempty=True)
+        _require_optional_bool("crosses_contexts", self.crosses_contexts)
+        _require_string_tuple("recovery", self.recovery)
+        if not isinstance(self.confidence, Confidence):
+            raise TypeError("confidence must be a Confidence")
+        _require_string_tuple("evidence", self.evidence)
+        _require_string_tuple("unresolved", self.unresolved)
+
+    @property
+    def complete(self) -> bool:
+        return self.register_policy.complete and self.crosses_contexts is not None and self.confidence is not Confidence.NONE and bool(self.evidence) and not self.unresolved
+
+    @property
+    def classification(self) -> str:
+        if not self.complete:
+            return "POTENTIAL_CROSS_CONTEXT"
+        return "CONFIRMED_CROSS_CONTEXT" if self.crosses_contexts else "CONTAINED_PER_CONTEXT"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"contract_id": self.contract_id, "register_policy": self.register_policy.to_dict(), "writer_context": self.writer_context, "consumer_context": self.consumer_context, "affected_scope": self.affected_scope, "effects": sorted(self.effects), "crosses_contexts": self.crosses_contexts, "recovery": sorted(self.recovery), "confidence": self.confidence.value, "evidence": sorted(self.evidence), "unresolved": sorted(self.unresolved), "classification": self.classification, "complete": self.complete}
+
+    def to_json(self) -> str:
+        return _json(self.to_dict())
