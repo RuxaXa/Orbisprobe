@@ -1,0 +1,15 @@
+{
+  "action_result": "RESOLVED_SAFE",
+  "case": "C",
+  "expect": {
+    "check": "result_disposition_separation",
+    "verifier": "CHANGES_REQUIRED"
+  },
+  "lead_after": {
+    "edge": "EDGE-1",
+    "status": "CLOSURE_PENDING"
+  },
+  "lead_disposition": "SAFE_CLOSED",
+  "source": "historical campaign: RESOLVED_SAFE must never imply whole-lead closure",
+  "title": "action_result SAFE but the lead is still active"
+}

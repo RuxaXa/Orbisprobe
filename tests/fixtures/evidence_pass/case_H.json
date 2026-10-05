@@ -1,0 +1,13 @@
+{
+  "case": "H",
+  "expect": {
+    "errors": [
+      "symlink",
+      "overlaps source evidence",
+      "aliases source evidence"
+    ],
+    "fail_closed": true
+  },
+  "source": "hardening: safe output handling must refuse symlinks, overlap and source aliases",
+  "title": "source/output symlink and hardlink attack"
+}

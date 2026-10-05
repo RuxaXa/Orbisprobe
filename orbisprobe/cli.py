@@ -14,6 +14,7 @@ from .backends.base import BackendStatus, ResourceLimits
 from .backends.cache import AnalysisCache
 from .backends.orchestrator import BackendOrchestrator, default_registry
 from .evidence import EvidenceLog
+from .evidence_pass.cli import add_evidence_pass_parser, run_evidence_pass_command
 from .leads.cli import add_leads_parser, run_leads_command
 from .policy import Policy
 from .report import markdown_report
@@ -103,6 +104,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="orbisprobe")
     sub = parser.add_subparsers(dest="cmd", required=True)
     add_leads_parser(sub)
+    add_evidence_pass_parser(sub)
 
     command = sub.add_parser("validate")
     command.add_argument("experiment")
@@ -183,6 +185,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.cmd == "leads":
         return run_leads_command(args)
+    if args.cmd == "evidence-pass":
+        return run_evidence_pass_command(args)
     if args.cmd == "validate":
         exp, error = _load_experiment(args.experiment)
         if error is not None or exp is None:

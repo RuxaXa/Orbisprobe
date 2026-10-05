@@ -1,0 +1,9 @@
+{
+  "case": "I",
+  "expect": {
+    "error": "unknown fields",
+    "fail_closed": true
+  },
+  "source": "hardening: a plan that redefines or extends the safety policy must be rejected",
+  "title": "unknown safety field fails closed"
+}

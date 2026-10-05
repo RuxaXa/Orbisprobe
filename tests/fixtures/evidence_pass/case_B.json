@@ -1,0 +1,23 @@
+{
+  "action_result": "EDGE_REDUCED",
+  "case": "B",
+  "expect": {
+    "recipients": [
+      "EP-LEAD-02"
+    ],
+    "reexecuted": false,
+    "shared_actions": 1,
+    "unchanged_leads": [
+      "EP-LEAD-03"
+    ],
+    "verifier": "PASS"
+  },
+  "lead_after": {
+    "edge": "EDGE-0",
+    "status": "SAFE_INVARIANT"
+  },
+  "lead_disposition": "SAFE_CLOSED",
+  "shared": true,
+  "source": "historical campaign: one shared analysis action served several leads while an unrelated terminal lead stayed byte-identical",
+  "title": "shared evidence propagation (one action, several leads)"
+}

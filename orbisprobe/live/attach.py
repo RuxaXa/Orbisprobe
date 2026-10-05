@@ -211,9 +211,24 @@ def validate_greeting(greeting: str, *, previous_instances: set[str],
         violations.append("greeting carries no instance id")
     elif instance in previous_instances:
         violations.append(f"stale greeting: instance {instance} was already consumed")
-    for required in ("pid", "payload", "fw"):
+    for required in ("pid", "payload"):
         if required not in data:
             violations.append(f"greeting misses {required}")
+    # Firmware: akzeptiere die alte nackte Form ("fw") UND die basis-explizite Form
+    # ("fw_dec"/"fw_hex", seit Phase 12W'). Beides muss vorhanden und konsistent sein.
+    if "fw" in data:
+        try:
+            data["fw_consistent"] = int(str(data["fw"])) in (1352, 0x1352)
+        except ValueError:
+            violations.append(f"greeting fw not numeric: {data['fw']!r}")
+    elif "fw_dec" in data and "fw_hex" in data:
+        try:
+            if int(str(data["fw_dec"])) != int(str(data["fw_hex"]), 16):
+                violations.append("greeting fw_dec/fw_hex disagree")
+        except ValueError:
+            violations.append("greeting fw_dec/fw_hex not numeric")
+    else:
+        violations.append("greeting misses firmware (fw or fw_dec/fw_hex)")
     age = None
     if delivered_epoch:
         age = time.time() - delivered_epoch

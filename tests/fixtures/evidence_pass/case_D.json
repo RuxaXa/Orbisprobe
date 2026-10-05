@@ -1,0 +1,15 @@
+{
+  "case": "D",
+  "expect": {
+    "freshness": "STALE_RESULT",
+    "review_state": "STALE_REVIEW",
+    "stop": true
+  },
+  "history": {
+    "note": "documentation only, never asserted: the original campaign constant was the pre-F3 freeze",
+    "pre_f3_package_sha256sums_sha256": "f7ac4e1878a8890bfdcfabeae92fb268401cec2483fd0f05ad4b05ea7fefb5af"
+  },
+  "source": "historical campaign: delayed worker result naming the pre-freeze hash",
+  "stale_hash_source": "previous_freeze_of_same_lineage",
+  "title": "stale verifier/review result from a previous package hash"
+}

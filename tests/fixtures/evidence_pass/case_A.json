@@ -1,0 +1,17 @@
+{
+  "action_result": "RESOLVED_SAFE",
+  "case": "A",
+  "expect": {
+    "actions_executed": 1,
+    "active_leads": 0,
+    "exactly_once": true,
+    "verifier": "PASS"
+  },
+  "lead_after": {
+    "edge": "EDGE-0",
+    "status": "SAFE_INVARIANT"
+  },
+  "lead_disposition": "SAFE_CLOSED",
+  "source": "historical campaign: one bounded offline evidence action closes one lead",
+  "title": "ordinary EvidenceAction pass"
+}

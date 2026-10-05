@@ -1,0 +1,15 @@
+{
+  "case": "E",
+  "expect": {
+    "check": "claim_traceability",
+    "verifier": "CHANGES_REQUIRED"
+  },
+  "injected_claims": [
+    {
+      "claim": "the scratch length equals the block length",
+      "function": "0xffffffffd016efa0"
+    }
+  ],
+  "source": "historical campaign: a decisive claim without function/address/field/slice coordinates",
+  "title": "untraceable claim"
+}

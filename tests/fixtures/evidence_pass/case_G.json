@@ -1,0 +1,17 @@
+{
+  "allowed_paths": [
+    "action-plan.json",
+    "SHA256SUMS"
+  ],
+  "case": "G",
+  "expect": {
+    "auto_remediation": false,
+    "new_hash_differs": true,
+    "status": "REMEDIATION_READY"
+  },
+  "out_of_scope_paths": [
+    "leads-final.json"
+  ],
+  "source": "review cycle: F3 remediation re-froze the package and invalidated the old review",
+  "title": "review remediation produces a new freeze"
+}

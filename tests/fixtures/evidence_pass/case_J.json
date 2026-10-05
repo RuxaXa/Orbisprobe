@@ -1,0 +1,12 @@
+{
+  "case": "J",
+  "expect": {
+    "recovered_in_flight": "UNKNOWN_UNVERIFIED",
+    "retry_attempts": 2,
+    "status": "UNKNOWN_UNVERIFIED",
+    "success": false,
+    "terminal": true
+  },
+  "source": "historical campaign: interruption after STARTED is UNKNOWN_UNVERIFIED, never success",
+  "title": "gateway-interrupted worker"
+}

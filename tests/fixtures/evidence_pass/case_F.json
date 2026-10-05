@@ -1,0 +1,18 @@
+{
+  "case": "F",
+  "correct_label": "bcopy(indirdep+0x50 bound-buffer data -> bp->b_data, bp->b_bcount)",
+  "expect": {
+    "check": "copy_direction_claims",
+    "path_independent": true,
+    "verifier": "CHANGES_REQUIRED"
+  },
+  "history": {
+    "corrected_package_sha256sums_sha256": "a6cecb8fa6bf449b4494f0a313c01217596bf30c1ca2b1090184c5e2cf1221f1",
+    "note": "documentation only, never asserted: hashes of the two campaign freezes",
+    "pre_f3_package_sha256sums_sha256": "f7ac4e1878a8890bfdcfabeae92fb268401cec2483fd0f05ad4b05ea7fefb5af"
+  },
+  "inverted_field_names_must_fail": true,
+  "pre_f3_label": "bcopy(bp->b_data -> indirdep+0x50 bound-buffer data, bp->b_bcount)",
+  "source": "review F3: initiation bound-buffer copy labelled with source and destination swapped",
+  "title": "Scratch copy-direction labelling error"
+}
