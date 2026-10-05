@@ -1,0 +1,111 @@
+{
+  "fixtures": [
+    {
+      "id": "r15-overwrite",
+      "binary_hex": "49 89 ff 45 31 ff 4c 89 f8 90 c3",
+      "base": 4194304,
+      "function": 4194304,
+      "function_end": 4194315,
+      "source_register": "rdi",
+      "observe_register": "r15",
+      "consumer": 4194310,
+      "expected_domain": [0],
+      "expected_native_consumer": false
+    },
+    {
+      "id": "rbx-overwrite",
+      "binary_hex": "48 89 fb 31 db 48 89 d8 90 c3",
+      "base": 5242880,
+      "function": 5242880,
+      "function_end": 5242890,
+      "source_register": "rdi",
+      "observe_register": "rbx",
+      "consumer": 5242885,
+      "expected_domain": [0],
+      "expected_native_consumer": false
+    },
+    {
+      "id": "stale-eax",
+      "binary_hex": "55 48 89 e5 b9 80 00 00 c0 0f 32 0d 00 10 00 00 b8 00 00 00 00 0f 30 0f 01 d8 c3",
+      "base": 13631488,
+      "function": 13631488,
+      "function_end": 13631515,
+      "expected_native_classification": "SVM-CAPABILITY-ONLY"
+    },
+    {
+      "id": "stale-edx",
+      "binary_hex": "55 48 89 e5 b9 80 00 00 c0 0f 32 0d 00 10 00 00 ba 00 00 00 00 0f 30 0f 01 d8 c3",
+      "base": 14680064,
+      "function": 14680064,
+      "function_end": 14680091,
+      "expected_native_classification": "SVM-CAPABILITY-ONLY"
+    },
+    {
+      "id": "dead-stack-slot",
+      "binary_hex": "48 89 bd 70 ff ff ff c3",
+      "base": 6291456,
+      "function": 6291456,
+      "function_end": 6291464,
+      "expected_memory": "STORE_ONLY"
+    },
+    {
+      "id": "getter-c92aae80",
+      "research_address": "0xc92aae80",
+      "binary_hex": "48 8b 47 20 c3",
+      "base": 7340032,
+      "function": 7340032,
+      "function_end": 7340037,
+      "expected_memory": "GETTER_READONLY"
+    },
+    {
+      "id": "tag-0xf-snapshot-0x400",
+      "binary_hex": "80 3f 0f 75 0c 48 8b 47 18 48 3d 00 04 00 00 77 01 c3 c3",
+      "base": 8388608,
+      "function": 8388608,
+      "function_end": 8388627,
+      "expected_constants": [15, 1024],
+      "expected_snapshot_offset": 24
+    },
+    {
+      "id": "call-clobber",
+      "binary_hex": "48 89 f8 e8 00 00 00 00 48 89 c3 c3",
+      "base": 9437184,
+      "function": 9437184,
+      "function_end": 9437196,
+      "source_register": "rdi",
+      "observe_register": "rax",
+      "consumer": 9437192,
+      "expected_native_consumer": false
+    },
+    {
+      "id": "callee-saved-propagation",
+      "binary_hex": "48 89 fb e8 00 00 00 00 48 89 d8 c3",
+      "base": 10485760,
+      "function": 10485760,
+      "function_end": 10485772,
+      "source_register": "rdi",
+      "observe_register": "rbx",
+      "consumer": 10485768,
+      "expected_native_consumer": true
+    },
+    {
+      "id": "user-pointer-to-descriptor",
+      "binary_hex": "48 8b 47 18 48 89 46 08 c3",
+      "base": 11534336,
+      "function": 11534336,
+      "function_end": 11534345,
+      "source_memory_base": "rdi",
+      "source_memory_offset": 24,
+      "consumer": 11534340,
+      "expected_native_consumer": true
+    },
+    {
+      "id": "dead-store",
+      "binary_hex": "48 89 7d f8 48 c7 45 f8 00 00 00 00 c3",
+      "base": 12582912,
+      "function": 12582912,
+      "function_end": 12582925,
+      "expected_memory": "STORE_ONLY"
+    }
+  ]
+}

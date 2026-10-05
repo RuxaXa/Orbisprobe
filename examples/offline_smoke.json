@@ -1,0 +1,34 @@
+{
+  "id": "orbisprobe-install-smoke",
+  "title": "Hash installed OrbisProbe README",
+  "hypothesis": "The installed README is the exact locally hardened artifact.",
+  "controlled_input": "README.md",
+  "validation": "Compare the observed SHA-256 with the independently computed expected digest.",
+  "consumer": "OfflineTarget.hash_file",
+  "expected_effect": "The hash oracle evaluates true without any live target contact.",
+  "observable": "SHA-256 and byte length in raw JSONL evidence.",
+  "experiment": "Hash the installed README once and compare the digest.",
+  "risk": "offline",
+  "preconditions": [],
+  "forbidden_sinks": [],
+  "reachable_sinks": [],
+  "validation_steps": [],
+  "steps": [
+    {
+      "kind": "hash_file",
+      "args": {"path": "README.md"}
+    }
+  ],
+  "oracles": [
+    {
+      "kind": "field_equals",
+      "args": {
+        "step": 0,
+        "field": "sha256",
+        "expected": "2cde246d139ec009093e0fbb969c533257bd70ab8b5d95a46cc2e97cd3475d21"
+      }
+    }
+  ],
+  "restore_steps": [],
+  "metadata": {"support_experiment": true}
+}

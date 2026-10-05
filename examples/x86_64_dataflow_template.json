@@ -1,0 +1,40 @@
+{
+  "id": "x86-64-dataflow-template",
+  "title": "Security-relevant x86-64 dataflow template",
+  "hypothesis": "A controlled value reaches the named consumer with the predicted security effect.",
+  "controlled_input": "REPLACE_WITH_EXACT_CONTROLLED_INPUT",
+  "validation": "REPLACE_WITH_STATIC_AND_RUNTIME_PRECONDITION_PROOFS",
+  "consumer": "REPLACE_WITH_EXACT_CONSUMER",
+  "expected_effect": "REPLACE_WITH_DISCRIMINATING_EXPECTED_EFFECT",
+  "observable": "REPLACE_WITH_RAW_OBSERVABLE",
+  "experiment": "REPLACE_WITH_BOUNDED_A_B_OR_NEGATIVE_CONTROL_EXPERIMENT",
+  "risk": "active_request",
+  "preconditions": ["dataflow_static_gate", "control_channel_ready", "no_persistent_sink_reachable"],
+  "forbidden_sinks": [
+    "bootloader_write", "code_page_write", "efuse", "firmware_commit",
+    "flash_write", "fsl_write", "key_provision", "nor_write", "nvram_write",
+    "nvs_write", "otp", "page_table_write", "persistent_state", "snvs_write",
+    "syscon_write", "update_install"
+  ],
+  "reachable_sinks": [],
+  "validation_steps": [
+    {"kind": "check_precondition", "args": {"name": "dataflow_static_gate"}},
+    {"kind": "check_precondition", "args": {"name": "control_channel_ready"}},
+    {"kind": "check_precondition", "args": {"name": "no_persistent_sink_reachable"}}
+  ],
+  "steps": [],
+  "oracles": [],
+  "restore_steps": [],
+  "stop_on": ["fault", "unexpected_reboot", "control_channel_loss"],
+  "metadata": {
+    "live_target": true,
+    "template_only": true,
+    "security_relevant_x86_64_dataflow": true,
+    "x86_64_dataflow": {
+      "definition": "REPLACE_WITH_DEFINITION_SITE_AND_VALUE",
+      "overwrite_history": "REPLACE_WITH_ALL_REDEFINITIONS_OR_PROOF_OF_NONE",
+      "call_clobber_analysis": "REPLACE_WITH_EACH_INTERVENING_CALL_AND_ABI_EFFECT",
+      "consumer": "REPLACE_WITH_FINAL_CONSUMER_AND_DEREFERENCE_ORDER"
+    }
+  }
+}
